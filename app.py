@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -749,11 +749,29 @@ def module2_covariance():
 
 
 def module2_correlation():
-    df = st.session_state.data
     learning_question(
         "Wie wird aus der skalenabhängigen Kovarianz Schritt für Schritt ein standardisierter Zusammenhang zwischen −1 und +1?"
     )
 
+    st.markdown("#### Experiment: Alle Testwerte einer Variablen verändern")
+    st.selectbox(
+        "Welche Variable verändern?",
+        ["Sprachverständnis (Y)", "Wortschatz (X)"],
+        key="m2_transform_target",
+    )
+    c1, c2, c3 = st.columns(3)
+    c1.button("Zu allen +5", use_container_width=True, on_click=transform_m2, args=("plus5",))
+    c2.button("Alle ×2", use_container_width=True, on_click=transform_m2, args=("times2",))
+    c3.button("Beide zurücksetzen", use_container_width=True, on_click=transform_m2, args=("reset",))
+    if "m2_last_transform" in st.session_state:
+        label, r_before, r_after, changed, total = st.session_state["m2_last_transform"]
+        st.success(
+            f"{label}: {changed} von {total} Personen verändert. "
+            f"Korrelation vorher: {r_before:.3f}; nachher: {r_after:.3f}."
+        )
+    st.caption("Die Umrechnung gilt für alle Personen der gewählten Variablen und kann mehrfach angewendet werden.")
+
+    df = st.session_state.data
     X = df["Wortschatz"].astype(float).to_numpy()
     Y = df["Sprachverständnis"].astype(float).to_numpy()
     mx, my = np.mean(X), np.mean(Y)
@@ -771,10 +789,10 @@ def module2_correlation():
         "3 · X durch SD(X) teilen",
         "4 · Auch Y durch SD(Y) teilen",
     ]
-    step = st.select_slider(
+    step = st.radio(
         "Transformationsschritt",
         options=steps,
-        value=steps[0],
+        horizontal=True,
         key="m2b_transform_step"
     )
     step_no = steps.index(step) + 1
