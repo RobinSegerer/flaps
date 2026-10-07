@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -1845,25 +1845,28 @@ def difficulty_extensions():
             ["Mehrstufige Items", "Ratekorrektur", "Speedtests"]
         )
         with likert_tab:
-            st.markdown("#### Gleiche Antworten – andere Kodierung")
-            st.write("Vorhersage: Ändert sich die Schwierigkeit, wenn dieselben Antworten als 1–4 statt 0–3 kodiert werden?")
-            offset = st.radio("Kodierung", ["0–3", "1–4"], horizontal=True, key="m6_likert_encoding")
+            st.markdown("#### Von den Antworten zur Itemschwierigkeit")
+            st.write("Verändern Sie die Antworten in der Tabelle. Berechnen Sie anschließend die Schwierigkeit in drei Schritten: erst umkodieren, dann mitteln, dann durch den maximal erreichbaren Wert teilen.")
             answers = st.data_editor(
-                pd.DataFrame({"Person": NAMES, "Antwort (0–3)": [0, 1, 2, 3, 2, 1, 3, 0, 2, 1]}),
-                disabled=["Person"], hide_index=True, key="m6_likert_answers",
-                column_config={"Antwort (0–3)": st.column_config.NumberColumn(min_value=0, max_value=3, step=1, required=True)},
+                pd.DataFrame({"Person": NAMES, "Antwort (1–4)": [1, 2, 3, 4, 3, 2, 4, 1, 3, 2]}),
+                disabled=["Person"], hide_index=True, key="m6_likert_answers_v2",
+                column_config={"Antwort (1–4)": st.column_config.NumberColumn(min_value=1, max_value=4, step=1, required=True)},
             )
-            base_values = answers["Antwort (0–3)"].to_numpy(dtype=float)
-            low = 0 if offset == "0–3" else 1
-            values = base_values + low
+            values = answers["Antwort (1–4)"].to_numpy(dtype=float)
             item_mean = float(np.mean(values))
-            p = (item_mean - low) / 3
-            st.dataframe(pd.DataFrame({"Person": NAMES, "Gewählte Kodierung": values, "Nach Abzug des Minimums": values - low}), hide_index=True)
-            metric_row([("Mittelwert", f"{item_mean:.2f}"), ("Naiv: Mittelwert / Maximum", f"{item_mean/(low+3):.3f}"), ("Schwierigkeit p", f"{p:.3f}")])
+            p = (item_mean - 1) / 3
+            stage = st.radio("Rechenschritt", ["1 · Minimum abziehen", "2 · Mittelwert bilden", "3 · Durch Maximum teilen"], horizontal=True, key="m6_likert_stage")
+            st.dataframe(pd.DataFrame({"Person": NAMES, "Originalantwort": values, "Umkodiert: Antwort − 1": values - 1}), hide_index=True)
+            if stage.startswith("1"):
+                st.info("Aus 1, 2, 3, 4 wird 0, 1, 2, 3. Die niedrigste Antwort liefert jetzt 0 Punkte, die höchste 3 Punkte.")
+            elif stage.startswith("2"):
+                st.metric("Mittelwert nach Umkodierung", f"{item_mean-1:.2f}")
+                st.write(f"Summe der umkodierten Antworten / Personen: {np.sum(values-1):.0f} / 10 = {item_mean-1:.2f}.")
+            else:
+                metric_row([("Mittelwert nach Umkodierung", f"{item_mean-1:.2f}"), ("Maximal erreichbar", "3"), ("Schwierigkeit p", f"{p:.3f}")])
+                st.write(f"{item_mean-1:.2f} / 3 = **{p:.3f}**. Die Schwierigkeit liegt zwischen 0 und 1.")
+                st.warning(f"Direkt den ursprünglichen Mittelwert durch 4 teilen ergäbe {item_mean/4:.3f}. Selbst wenn alle Personen 1 wählen, käme dabei 0,25 statt 0 heraus.")
             st.latex(r"p_i=\frac{\bar X_i-X_{\min}}{X_{\max}-X_{\min}}")
-            st.write(f"1 · Minimum abziehen: {item_mean:.2f} − {low} = {item_mean-low:.2f}.  "
-                     f"2 · Durch die Spannweite teilen: {item_mean-low:.2f} / 3 = {p:.3f}.")
-            st.success("Die Schwierigkeit bleibt bei der Umkodierung gleich. Nur durch das Maximum zu teilen funktioniert erst bei einem Skalenminimum von 0.")
             st.caption("Bei Likert-Items bedeutet ein hoher Wert hohe Zustimmung bzw. Merkmalsausprägung. Die Richtung muss vorher einheitlich kodiert sein; negativ gepolte Items werden gegebenenfalls umgepolt. Die Berechnung behandelt die Stufen als gleich weit auseinander.")
         with guessing_tab:
             st.write("Vorhersage: Wie viele richtige Antworten bleiben nach der Korrektur für zufälliges Raten übrig?")
@@ -1887,23 +1890,37 @@ def difficulty_extensions():
             st.info("Die Korrektur setzt blindes Raten mit gleich wahrscheinlichen Antwortoptionen voraus. Teilwissen und das Ausschließen von Optionen verändern die Ratewahrscheinlichkeit. Ein negativer Wert bleibt sichtbar und wird nicht auf 0 gesetzt.")
         with speed_tab:
             st.write("Vorhersage: Werden späte Items scheinbar schwieriger, wenn immer weniger Personen sie innerhalb der Zeit erreichen?")
-            time = st.slider("Bearbeitungszeit (Simulation)", 4, 16, 8, key="m6_speed_time")
+            time = st.slider("Zeitlimit (Sekunden)", 4, 16, 8, key="m6_speed_time")
+            errors = st.slider("Personen mit falscher Antwort pro Item (ohne Zeitlimit)", 0, 4, 0, key="m6_speed_errors")
+            chosen = st.selectbox("Welches Item untersuchen?", list(range(1, 9)), index=7, key="m6_speed_item")
+            handling = st.radio("Nicht erreichte Items bei der Schwierigkeit", ["Als falsch zählen", "Aus dem Nenner ausschließen"], horizontal=True, key="m6_speed_handling")
             # Potential correctness is fixed; only reaching the items changes with time.
-            potential = np.roll(np.tile([1, 1, 1, 0], 3), 1)
+            potential = np.array([0] * errors + [1] * (12-errors))
             speed = np.linspace(0.5, 1.25, 12)
             positions = np.arange(1, 9)
             reached = positions[None, :] <= np.floor(time * speed[:, None])
             correct = np.column_stack([np.roll(potential, j) for j in range(8)]).astype(bool)
             shown = np.where(reached, np.where(correct, "richtig", "falsch"), "nicht erreicht")
-            st.dataframe(pd.DataFrame(shown, index=[f"Person {j+1}" for j in range(12)], columns=[f"Item {j}" for j in positions]))
             n_reached = reached.sum(axis=0)
             n_right = (reached & correct).sum(axis=0)
             conditional = np.divide(n_right, n_reached, out=np.full(8, np.nan), where=n_reached > 0)
+            j = chosen - 1
+            displayed = n_right[j]/12 if handling == "Als falsch zählen" else conditional[j]
+            metric_row([("Richtig", str(n_right[j])), ("Falsch beantwortet", str(n_reached[j]-n_right[j])),
+                        ("Nicht erreicht", str(12-n_reached[j])), (f"Schwierigkeit Item {chosen}", f"{displayed:.3f}" if np.isfinite(displayed) else "nicht definiert")])
+            denominator = 12 if handling == "Als falsch zählen" else int(n_reached[j])
+            st.write(f"Item {chosen}: **{n_right[j]} richtige Antworten / {denominator} Personen**. Verändern Sie das Zeitlimit und vergleichen Sie die beiden Auswertungen.")
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=positions, y=n_right/12, mode="lines+markers", name="Nicht erreicht = falsch"))
+            fig.add_trace(go.Scatter(x=positions, y=conditional, mode="lines+markers", name="Nur Personen, die das Item erreicht haben"))
+            fig.update_layout(height=330, xaxis=dict(title="Itemposition", tickvals=positions, fixedrange=True), yaxis=dict(title="Itemschwierigkeit p", range=[0, 1.05], fixedrange=True), legend=dict(orientation="h", y=1.2), dragmode=False)
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.dataframe(pd.DataFrame(shown, index=[f"Person {j+1}" for j in range(12)], columns=[f"Item {j}" for j in positions]))
             st.dataframe(pd.DataFrame({"Item": positions, "Erreicht": n_reached, "Richtig": n_right,
                 "p: alle Personen": n_right / 12, "p: nur erreichte Items": conditional}), hide_index=True)
             st.latex(r"p_{\mathrm{alle}}=\frac{R}{N},\qquad p_{\mathrm{erreicht}}=\frac{R}{N_{\mathrm{erreicht}}}")
             st.write("Nicht erreichte Items werden für den Testscore häufig als 0 gewertet. Zur Analyse der Itemschwierigkeit muss man sie von tatsächlich falsch beantworteten Items unterscheiden. Bei reinen Speedtests soll gerade die Bearbeitungsgeschwindigkeit unterscheiden; die Items sind entsprechend meist sehr leicht.")
-            st.caption("Die potenziellen Antworten bleiben in dieser Simulation gleich: Bei vollständiger Bearbeitung werden pro Item 9 von 12 Antworten richtig. Unter Zeitdruck antwortet eine ausgewählte Gruppe; der Lösungsanteil unter den Bearbeitenden ist deshalb kein automatisch unverzerrter Schätzer. Ohne Bearbeitende ist er nicht definiert.")
+            st.caption(f"Ohne Zeitlimit sind pro Item {12-errors} von 12 Antworten richtig. Mit 0 falschen Antworten entsteht ein reiner Speedtest: Die Unterschiede im Score kommen ausschließlich aus dem Tempo. Unter Zeitdruck antwortet eine ausgewählte Gruppe; der Lösungsanteil unter den Bearbeitenden ist deshalb kein automatisch unverzerrter Schätzer. Ohne Bearbeitende ist er nicht definiert.")
 
 
 def part_whole_experiment():
@@ -1911,8 +1928,7 @@ def part_whole_experiment():
         st.write("Vorhersage: Kann ein Zufallsitem mit dem Gesamtscore korrelieren, obwohl es mit den anderen Items nichts gemeinsam hat?")
         count = st.slider("Anzahl Items insgesamt", 2, 20, 4, key="m6_pw_count")
         kind = st.radio("Untersuchtes Item", ["Zufallsitem", "Item mit gemeinsamem Fähigkeitsbezug"], horizontal=True, key="m6_pw_kind")
-        seed = st.number_input("Simulationsdurchgang", min_value=1, value=1, step=1, key="m6_pw_seed")
-        rng = np.random.default_rng(int(seed))
+        rng = np.random.default_rng(1)
         ability = rng.normal(size=400)
         rest_items = (0.8 * ability[:, None] + rng.normal(size=(400, 19)) > 0).astype(float)
         noise = rng.normal(size=400)
@@ -1937,7 +1953,7 @@ def part_whole_experiment():
         st.dataframe(pd.DataFrame({"Person": np.arange(1, 401), "Item": item.astype(int), "Gesamtscore S": total.astype(int), "Restscore S − Item": rest.astype(int)}), hide_index=True, height=220)
         st.latex(r"Cov(X_i,S)=Var(X_i)+Cov(X_i,S_{-i})")
         st.info("Der Gesamtscore enthält die Antwort auf das untersuchte Item. Dessen eigene Varianz erhöht bereits die Kovarianz mit dem Gesamtscore. Die Part-Whole-Korrektur entfernt diesen Eigenanteil, indem das Item aus dem Score herausgerechnet wird.")
-        st.write("Probieren Sie wenige und viele Items aus und wechseln Sie den Simulationsdurchgang. Beim Zufallsitem liegt die korrigierte Trennschärfe im Mittel bei 0; einzelne Stichproben weichen davon ab. Bei kurzen Tests fällt der Eigenanteil besonders auf.")
+        st.write("Verändern Sie die Testlänge und wechseln Sie zwischen dem Zufallsitem und einem Item mit Fähigkeitsbezug. Die 400 Personen bleiben dabei dieselben. Beim Zufallsitem liegt die korrigierte Trennschärfe typischerweise nahe 0. Bei kurzen Tests fällt der Eigenanteil besonders auf.")
 
 
 def module6():
