@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -1839,6 +1839,107 @@ def module5():
 
 
 
+def difficulty_extensions():
+    with st.expander("Ausprobieren: Mehrstufige Items, Ratekorrektur und Speedtests"):
+        likert_tab, guessing_tab, speed_tab = st.tabs(
+            ["Mehrstufige Items", "Ratekorrektur", "Speedtests"]
+        )
+        with likert_tab:
+            st.markdown("#### Gleiche Antworten – andere Kodierung")
+            st.write("Vorhersage: Ändert sich die Schwierigkeit, wenn dieselben Antworten als 1–4 statt 0–3 kodiert werden?")
+            offset = st.radio("Kodierung", ["0–3", "1–4"], horizontal=True, key="m6_likert_encoding")
+            answers = st.data_editor(
+                pd.DataFrame({"Person": NAMES, "Antwort (0–3)": [0, 1, 2, 3, 2, 1, 3, 0, 2, 1]}),
+                disabled=["Person"], hide_index=True, key="m6_likert_answers",
+                column_config={"Antwort (0–3)": st.column_config.NumberColumn(min_value=0, max_value=3, step=1, required=True)},
+            )
+            base_values = answers["Antwort (0–3)"].to_numpy(dtype=float)
+            low = 0 if offset == "0–3" else 1
+            values = base_values + low
+            item_mean = float(np.mean(values))
+            p = (item_mean - low) / 3
+            st.dataframe(pd.DataFrame({"Person": NAMES, "Gewählte Kodierung": values, "Nach Abzug des Minimums": values - low}), hide_index=True)
+            metric_row([("Mittelwert", f"{item_mean:.2f}"), ("Naiv: Mittelwert / Maximum", f"{item_mean/(low+3):.3f}"), ("Schwierigkeit p", f"{p:.3f}")])
+            st.latex(r"p_i=\frac{\bar X_i-X_{\min}}{X_{\max}-X_{\min}}")
+            st.write(f"1 · Minimum abziehen: {item_mean:.2f} − {low} = {item_mean-low:.2f}.  "
+                     f"2 · Durch die Spannweite teilen: {item_mean-low:.2f} / 3 = {p:.3f}.")
+            st.success("Die Schwierigkeit bleibt bei der Umkodierung gleich. Nur durch das Maximum zu teilen funktioniert erst bei einem Skalenminimum von 0.")
+            st.caption("Bei Likert-Items bedeutet ein hoher Wert hohe Zustimmung bzw. Merkmalsausprägung. Die Richtung muss vorher einheitlich kodiert sein; negativ gepolte Items werden gegebenenfalls umgepolt. Die Berechnung behandelt die Stufen als gleich weit auseinander.")
+        with guessing_tab:
+            st.write("Vorhersage: Wie viele richtige Antworten bleiben nach der Korrektur für zufälliges Raten übrig?")
+            k = st.slider("Antwortoptionen k (genau eine richtig)", 2, 6, 4, key="m6_guess_k")
+            right = st.slider("Richtige Antworten R", 0, 100, 25, key="m6_guess_right")
+            remaining = 100 - right
+            wrong_key = "m6_guess_wrong"
+            if wrong_key in st.session_state:
+                st.session_state[wrong_key] = min(int(st.session_state[wrong_key]), remaining)
+            else:
+                st.session_state[wrong_key] = min(75, remaining)
+            wrong = st.number_input("Falsche Antworten F", min_value=0, max_value=remaining,
+                                    step=1, key=wrong_key)
+            omitted = 100 - right - wrong
+            corrected_right = right - wrong / (k - 1)
+            p = corrected_right / 100
+            st.caption(f"N = 100 Personen; nicht beantwortet: {omitted}. Nicht beantwortete Items zählen nicht als F, bleiben aber im Nenner N.")
+            st.latex(r"P_{\mathrm{korr}}=\frac{R-\frac{F}{k-1}}{N}")
+            metric_row([("Unkorrigiert R/N", f"{right/100:.3f}"), ("Geschätzte Ratetreffer F/(k−1)", f"{wrong/(k-1):.2f}"), ("Ratekorrigiert", f"{p:.3f}")])
+            st.write(f"({right} − {wrong}/({k} − 1)) / 100 = **{p:.3f}**")
+            st.info("Die Korrektur setzt blindes Raten mit gleich wahrscheinlichen Antwortoptionen voraus. Teilwissen und das Ausschließen von Optionen verändern die Ratewahrscheinlichkeit. Ein negativer Wert bleibt sichtbar und wird nicht auf 0 gesetzt.")
+        with speed_tab:
+            st.write("Vorhersage: Werden späte Items scheinbar schwieriger, wenn immer weniger Personen sie innerhalb der Zeit erreichen?")
+            time = st.slider("Bearbeitungszeit (Simulation)", 4, 16, 8, key="m6_speed_time")
+            # Potential correctness is fixed; only reaching the items changes with time.
+            potential = np.roll(np.tile([1, 1, 1, 0], 3), 1)
+            speed = np.linspace(0.5, 1.25, 12)
+            positions = np.arange(1, 9)
+            reached = positions[None, :] <= np.floor(time * speed[:, None])
+            correct = np.column_stack([np.roll(potential, j) for j in range(8)]).astype(bool)
+            shown = np.where(reached, np.where(correct, "richtig", "falsch"), "nicht erreicht")
+            st.dataframe(pd.DataFrame(shown, index=[f"Person {j+1}" for j in range(12)], columns=[f"Item {j}" for j in positions]))
+            n_reached = reached.sum(axis=0)
+            n_right = (reached & correct).sum(axis=0)
+            conditional = np.divide(n_right, n_reached, out=np.full(8, np.nan), where=n_reached > 0)
+            st.dataframe(pd.DataFrame({"Item": positions, "Erreicht": n_reached, "Richtig": n_right,
+                "p: alle Personen": n_right / 12, "p: nur erreichte Items": conditional}), hide_index=True)
+            st.latex(r"p_{\mathrm{alle}}=\frac{R}{N},\qquad p_{\mathrm{erreicht}}=\frac{R}{N_{\mathrm{erreicht}}}")
+            st.write("Nicht erreichte Items werden für den Testscore häufig als 0 gewertet. Zur Analyse der Itemschwierigkeit muss man sie von tatsächlich falsch beantworteten Items unterscheiden. Bei reinen Speedtests soll gerade die Bearbeitungsgeschwindigkeit unterscheiden; die Items sind entsprechend meist sehr leicht.")
+            st.caption("Die potenziellen Antworten bleiben in dieser Simulation gleich: Bei vollständiger Bearbeitung werden pro Item 9 von 12 Antworten richtig. Unter Zeitdruck antwortet eine ausgewählte Gruppe; der Lösungsanteil unter den Bearbeitenden ist deshalb kein automatisch unverzerrter Schätzer. Ohne Bearbeitende ist er nicht definiert.")
+
+
+def part_whole_experiment():
+    with st.expander("Ausprobieren: Trennschärfe mit und ohne Part-Whole-Korrektur"):
+        st.write("Vorhersage: Kann ein Zufallsitem mit dem Gesamtscore korrelieren, obwohl es mit den anderen Items nichts gemeinsam hat?")
+        count = st.slider("Anzahl Items insgesamt", 2, 20, 4, key="m6_pw_count")
+        kind = st.radio("Untersuchtes Item", ["Zufallsitem", "Item mit gemeinsamem Fähigkeitsbezug"], horizontal=True, key="m6_pw_kind")
+        seed = st.number_input("Simulationsdurchgang", min_value=1, value=1, step=1, key="m6_pw_seed")
+        rng = np.random.default_rng(int(seed))
+        ability = rng.normal(size=400)
+        rest_items = (0.8 * ability[:, None] + rng.normal(size=(400, 19)) > 0).astype(float)
+        noise = rng.normal(size=400)
+        item = (noise > 0).astype(float) if kind == "Zufallsitem" else (0.8 * ability + noise > 0).astype(float)
+        rest = rest_items[:, :count-1].sum(axis=1)
+        total = rest + item
+        raw = corr(item, total)
+        corrected = corr(item, rest)
+        metric_row([("Itemschwierigkeit", f"{item.mean():.3f}"), ("Unkorrigiert: Item ↔ Gesamtscore", f"{raw:.3f}"), ("Korrigiert: Item ↔ Restscore", f"{corrected:.3f}")])
+        st.latex(r"S=X_i+S_{-i},\qquad r_{i,S}=Cor(X_i,S),\qquad r_{i,S-i}=Cor(X_i,S-X_i)")
+        columns = st.columns(2)
+        for col, score, title, r in zip(columns, [total, rest], ["Gesamtscore: Item enthalten", "Restscore: Item entfernt"], [raw, corrected]):
+            pairs = pd.DataFrame({"Itemantwort": item, "Score": score}).value_counts().reset_index(name="Personen")
+            fig = go.Figure(go.Scatter(x=pairs["Score"], y=pairs["Itemantwort"], mode="markers",
+                marker=dict(size=8 + 3*np.sqrt(pairs["Personen"])),
+                customdata=pairs["Personen"], hovertemplate="Score: %{x}<br>Item: %{y}<br>Personen: %{customdata}<extra></extra>"))
+            fig.update_layout(title=f"{title} · r = {r:.3f}", height=330,
+                xaxis=dict(title="Testwert", range=[-0.5, count+0.5], fixedrange=True),
+                yaxis=dict(title="Itemantwort", tickvals=[0, 1], range=[-0.25, 1.25], fixedrange=True), dragmode=False)
+            col.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        st.caption("Größere Punkte stehen für mehr Personen mit derselben Antwort und demselben Score. Beide Diagramme verwenden dieselbe x-Skala.")
+        st.dataframe(pd.DataFrame({"Person": np.arange(1, 401), "Item": item.astype(int), "Gesamtscore S": total.astype(int), "Restscore S − Item": rest.astype(int)}), hide_index=True, height=220)
+        st.latex(r"Cov(X_i,S)=Var(X_i)+Cov(X_i,S_{-i})")
+        st.info("Der Gesamtscore enthält die Antwort auf das untersuchte Item. Dessen eigene Varianz erhöht bereits die Kovarianz mit dem Gesamtscore. Die Part-Whole-Korrektur entfernt diesen Eigenanteil, indem das Item aus dem Score herausgerechnet wird.")
+        st.write("Probieren Sie wenige und viele Items aus und wechseln Sie den Simulationsdurchgang. Beim Zufallsitem liegt die korrigierte Trennschärfe im Mittel bei 0; einzelne Stichproben weichen davon ab. Bei kurzen Tests fällt der Eigenanteil besonders auf.")
+
+
 def module6():
     version_badge()
     st.title("5 · Itemanalyse")
@@ -1872,6 +1973,7 @@ def module6():
     # ==========================================================
     if section.startswith("5A"):
         st.markdown("### 5A · Itemschwierigkeit")
+        difficulty_extensions()
         st.info(
             "**Itemschwierigkeit p:** Anteil der Personen, die ein dichotomes Item richtig lösen. "
             "Ein Item mit p = .80 ist leicht, ein Item mit p = .50 mittelschwer und ein Item mit p = .20 schwer."
@@ -2019,6 +2121,7 @@ def module6():
     # ==========================================================
     elif section.startswith("5B"):
         st.markdown("### 5B · Trennschärfe")
+        part_whole_experiment()
         st.info(
             "**Trennschärfe:** Zusammenhang zwischen einem Item und dem restlichen Test. "
             "Eine hohe positive Trennschärfe bedeutet: Personen mit insgesamt hoher Testleistung lösen das Item häufiger."
