@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.6.1"
+APP_VERSION = "1.6.2"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2533,79 +2533,11 @@ def reliability_correlations():
     st.info("Alpha lässt sich aus einer Kovarianzmatrix berechnen. Ob es die Reliabilität gut beschreibt, hängt vom Messmodell ab. Ein hohes Alpha beweist weder Eindimensionalität noch Validität; viele sehr ähnliche Items können Alpha erhöhen, ohne den Inhalt besser abzudecken. Negative Alpha-Werte bleiben sichtbar.")
 
 
-def fit_onefactor_omega(covariance_matrix):
-    """Unweighted least squares fit of a positive one-factor model, diagonal residuals."""
-    from scipy.optimize import least_squares
-    s = np.asarray(covariance_matrix, dtype=float)
-    idx = np.triu_indices(len(s), 1)
-    upper = np.sqrt(np.diag(s)*0.999)
-    start = np.minimum(np.full(len(s), np.sqrt(max(float(s[idx].mean()), 0.01))), upper*0.8)
-    result = least_squares(lambda loading: (np.outer(loading,loading)-s)[idx], start,
-                           bounds=(np.full(len(s), 0.0001), upper), max_nfev=1000)
-    loading = result.x
-    residual = np.diag(s)-loading**2
-    omega = float(loading.sum()**2/(loading.sum()**2+residual.sum()))
-    rms = float(np.sqrt(np.mean(result.fun**2)))
-    return omega, loading, residual, rms, result.success
-
-
-def reliability_alpha_omega():
-    learning_question("Wann stimmen Alpha und Omega überein – und was müssen wir für Omega über die Items annehmen?")
-    st.write("**Cronbachs α** wird aus den Itemvarianzen und -kovarianzen berechnet. **McDonalds ω** trennt mithilfe eines Faktorenmodells gemeinsame Merkmalsvarianz und Messfehler. Verändern Sie die Itemstruktur und beobachten Sie beide Werte.")
-    structure = st.radio("Messmodell", ["Gleiche Ladungen", "Ungleiche Ladungen", "Ladungen selbst einstellen"], horizontal=True, key="rel_ao_structure")
-    base = st.slider("Stärke des gemeinsamen Merkmals in den Items", 0.15, 0.85, 0.60, 0.05, key="rel_ao_base")
-    spread = st.slider("Unterschiede zwischen den Items", 0.0, 0.70, 0.50, 0.05, key="rel_ao_spread") if structure == "Ungleiche Ladungen" else 0
-    loadings = np.clip(base + np.linspace(-spread, spread, 6), 0.05, 0.95)
-    if structure == "Ladungen selbst einstellen":
-        cols = st.columns(3)
-        loadings = np.array([cols[i%3].slider(f"Ladung Item {i+1}", 0.05, 0.95, 0.60, 0.05, key=f"rel_loading_{i}") for i in range(6)])
-    st.caption("Ladung = Stärke des Zusammenhangs mit demselben latenten Merkmal. Alle Items haben in der Population Varianz 1; die Fehlervarianz ist jeweils 1 − Ladung². Die Beispiele verwenden kontinuierliche Itemwerte.")
-    rho = st.slider("Gemeinsamer Messfehler von Item 1 und 2 (Fehlerkorrelation)", 0.0, 0.70, 0.0, 0.05, key="rel_ao_error")
-    theta = np.diag(1-loadings**2)
-    theta[0,1] = theta[1,0] = rho*np.sqrt(theta[0,0]*theta[1,1])
-    sigma = np.outer(loadings,loadings)+theta
-    signal = float(loadings.sum()**2)
-    truth = signal/float(sigma.sum())
-    alpha = alpha_from_covariance(sigma)
-    metric_row([("α der Population", f"{alpha:.3f}"), ("ω bei bekanntem korrektem Modell", f"{truth:.3f}"), ("α minus ω", f"{alpha-truth:+.3f}")])
-    reliability_heatmap(sigma, "Itemkorrelationen aus Ihrem Messmodell")
-    st.dataframe(pd.DataFrame({"Item": np.arange(1,7), "Ladung λ": loadings, "Fehlervarianz": np.diag(theta)}), hide_index=True)
-    if rho > 0:
-        st.warning("Die Fehler von Item 1 und 2 hängen zusammen. Ihre zusätzliche Korrelation ist kein Signal des Zielmerkmals. Das hier gezeigte korrekte Omega berücksichtigt diese Fehlerkovarianz; ein Modell, das sie ignoriert, kann ebenfalls irreführen.")
-    elif np.ptp(loadings) < 1e-8:
-        st.success("Gleiche Ladungen und unkorrelierte Fehler: Alpha und Omega entsprechen hier beide der Reliabilität des Summenscores.")
-    else:
-        st.info("Ungleiche Ladungen bei unkorrelierten Fehlern: Alpha liegt hier unter der Reliabilität; Omega nutzt die unterschiedlichen Ladungen. Wie groß die Differenz ist, hängt von der konkreten Itemstruktur ab.")
-    st.latex(r"\alpha=\frac{m}{m-1}\left(1-\frac{\sum Var(X_i)}{Var(\sum X_i)}\right)")
-    st.latex(r"\omega=\frac{(\sum\lambda_i)^2}{(\sum\lambda_i)^2+\mathbf{1}'\Theta\mathbf{1}}\quad [Var(F)=1]")
-    st.caption("Bei unkorrelierten Fehlern ist 1′Θ1 einfach die Summe der Fehlervarianzen. Hier bedeutet Reliabilität den Varianzanteil des gemeinsamen Zielmerkmals im ungewichteten Summenscore; die korrelierten Fehler zählen zum Fehler. Das Beispiel behandelt ein gemeinsames Merkmal; mehrdimensionale Omega-Varianten werden hier nicht dargestellt.")
-    with st.expander("Von der bekannten Population zur Schätzung aus Antworten", expanded=False):
-        size = st.slider("Personen in der Stichprobe", 50, 1000, 200, 50, key="rel_ao_n")
-        if "rel_ao_sample_seed" not in st.session_state:
-            st.session_state["rel_ao_sample_seed"] = 42
-        if st.button("Neue Personengruppe ziehen", key="rel_ao_draw"):
-            st.session_state["rel_ao_sample_seed"] += 1
-        rng = np.random.default_rng(st.session_state["rel_ao_sample_seed"])
-        z = rng.normal(size=(1000,7))[:size]
-        responses = z[:,[0]]*loadings + z[:,1:] @ np.linalg.cholesky(theta).T
-        s = np.cov(responses, rowvar=False, ddof=1)
-        estimated_omega, fitted, residual, rms, success = fit_onefactor_omega(s)
-        metric_row([("α aus der Stichprobe", f"{alpha_from_covariance(s):.3f}"), ("Geschätztes ω (ein Faktor)", f"{estimated_omega:.3f}"), ("Bekannte Reliabilität", f"{truth:.3f}")])
-        st.caption(f"Omega wird tatsächlich aus den simulierten Antworten geschätzt: Einfaktormodell mit unkorrelierten Fehlern, ungewichtete kleinste Quadrate. Mittlere quadratische Abweichung der Kovarianzen als Wurzel: {rms:.3f} (beschreibend, kein formaler Modelltest).")
-        if not success:
-            st.warning("Die Modellschätzung hat nicht konvergiert. Interpretieren Sie den Omega-Wert nicht.")
-        if rho > 0:
-            st.warning("Absichtlich unpassendes Schätzmodell: Die eingestellte Fehlerkorrelation wird bei dieser Schätzung ignoriert. Vergleichen Sie geschätztes Omega mit der bekannten Reliabilität.")
-        st.write("**Ausprobieren:** Ziehen Sie bei 50 und bei 1000 Personen neue Gruppen. Vergleichen Sie die Schwankungen. Schalten Sie danach die Fehlerkorrelation hinzu: Eine größere Stichprobe behebt kein falsches Modell.")
-        st.dataframe(pd.DataFrame({"Item": np.arange(1,7), "Geschätzte Ladung": fitted, "Geschätzte Fehlervarianz": residual}), hide_index=True)
-    st.write("**Merksatz:** Alpha ist eine Funktion der Itemkovarianzen; Omega benötigt zusätzlich ein begründetes Messmodell. Welcher Koeffizient passt, entscheidet sich an diesem Modell, nicht daran, welcher Wert größer ist.")
-
-
 def score_intervals(score, reliability, mean_score, sd_score, z):
     sem = sd_score*np.sqrt(1-reliability)
     see = sd_score*np.sqrt(reliability*(1-reliability))
-    kelley = mean_score+reliability*(score-mean_score)
-    return sem, see, kelley, (score-z*sem, score+z*sem), (kelley-z*see, kelley+z*see)
+    estimated_true = mean_score+reliability*(score-mean_score)
+    return sem, see, estimated_true, (score-z*sem, score+z*sem), (estimated_true-z*see, estimated_true+z*see)
 
 
 def reliability_intervals():
@@ -2618,10 +2550,10 @@ def reliability_intervals():
     reliability = st.slider("Reliabilität für den ausgewählten Test", 0.0, 1.0, 0.80, 0.01, key="rel_ci_r")
     coverage = st.selectbox("Intervallniveau", [90, 95, 99], index=1, key="rel_ci_level")
     z = NormalDist().inv_cdf(0.5+coverage/200)
-    sem, see, kelley, classic, regression = score_intervals(score,reliability,mean_score,sd,z)
-    metric_row([("Standardmessfehler", f"{sem:.2f}"), ("Standardschätzfehler", f"{see:.2f}"), ("Kelley-Schätzung des wahren Werts", f"{kelley:.2f}")])
-    st.dataframe(pd.DataFrame({"Verfahren": ["Standardmessfehler", "Standardschätzfehler (Kelley)"],
-        "Intervallzentrum": [score,kelley], "Untere Grenze": [classic[0],regression[0]], "Obere Grenze": [classic[1],regression[1]]}), hide_index=True)
+    sem, see, estimated_true, classic, regression = score_intervals(score,reliability,mean_score,sd,z)
+    metric_row([("Standardmessfehler", f"{sem:.2f}"), ("Standardschätzfehler", f"{see:.2f}"), ("Regressionsbasierte Schätzung des wahren Werts", f"{estimated_true:.2f}")])
+    st.dataframe(pd.DataFrame({"Verfahren": ["Standardmessfehler", "Standardschätzfehler (Regression)"],
+        "Intervallzentrum": [score,estimated_true], "Untere Grenze": [classic[0],regression[0]], "Obere Grenze": [classic[1],regression[1]]}), hide_index=True)
     st.latex(r"SEM=SD(X)\sqrt{1-Rel(X)},\qquad I_{\mathrm{Mess}}=X\pm z\cdot SEM")
     st.latex(r"\hat T=M+Rel(X)(X-M),\quad SEE=SD(X)\sqrt{Rel(X)(1-Rel(X))},\quad I_{\mathrm{Schätz}}=\hat T\pm z\cdot SEE")
     st.caption(f"Zweiseitiges {coverage}%-Niveau: z = {z:.3f}. M und SD(X) stammen aus derselben relevanten Bezugsgruppe wie die Reliabilität. Die Unsicherheit dieser drei Kennwerte selbst wird hier nicht zusätzlich berücksichtigt.")
@@ -2635,7 +2567,7 @@ def reliability_intervals():
         rows = [score_intervals(score,r,mean_score,sd,z) for r in rs]
         for label, color, centers, errors, offset in [
             ("Messfehlerintervall um X", "#2878b5", [score]*len(rs), [z*v[0] for v in rows],0.13),
-            ("Schätzfehlerintervall um Kelley-Schätzung", "#d97706", [v[2] for v in rows], [z*v[1] for v in rows],-0.13)]:
+            ("Schätzfehlerintervall um regressionsbasierte Schätzung", "#d97706", [v[2] for v in rows], [z*v[1] for v in rows],-0.13)]:
             fig.add_trace(go.Scatter(x=centers, y=np.arange(len(rs))+offset, mode="markers", name=label,
                 marker=dict(size=11,color=color),error_x=dict(type="data",array=errors,color=color,thickness=3),
                 hovertemplate="Intervallzentrum: %{x:.2f}<extra>"+label+"</extra>"))
@@ -2650,26 +2582,26 @@ def reliability_intervals():
             yaxis=dict(title="Reliabilität",tickvals=list(range(len(rs))),ticktext=[f"{r:.2f}"+(" ← ausgewählt" if r==reliability else "") for r in rs],range=[-.5,len(rs)-.5],fixedrange=True),
             legend=dict(orientation="h",y=1.2),dragmode=False)
         st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
-        st.write("**Ausprobieren:** Verschieben Sie X weit über oder unter den Mittelwert. Bei kleiner Reliabilität wandert die Kelley-Schätzung stärker zum Gruppenmittel; das Messfehlerintervall bleibt um X zentriert.")
+        st.write("**Ausprobieren:** Verschieben Sie X weit über oder unter den Mittelwert. Bei kleiner Reliabilität wandert die regressionsbasierte Schätzung stärker zum Gruppenmittel; das Messfehlerintervall bleibt um X zentriert.")
     with second:
         grid = np.linspace(mean_score-3*sd,mean_score+3*sd,101)
         centers = mean_score+reliability*(grid-mean_score)
         fig=go.Figure()
         for center,width,color,fill,label in [(grid,z*sem,"#2878b5","rgba(40,120,181,.14)","Messfehlerintervall"),
-                                             (centers,z*see,"#d97706","rgba(217,119,6,.18)","Kelley-Intervall")]:
+                                             (centers,z*see,"#d97706","rgba(217,119,6,.18)","regressionsbasiertes Intervall")]:
             fig.add_trace(go.Scatter(x=grid,y=center-width,mode="lines",line=dict(width=0),showlegend=False,hoverinfo="skip"))
             fig.add_trace(go.Scatter(x=grid,y=center+width,mode="lines",line=dict(width=0),fill="tonexty",fillcolor=fill,name=label+f" ({coverage}%)",hoverinfo="skip"))
             fig.add_trace(go.Scatter(x=grid,y=center,mode="lines",line=dict(color=color),name=label+": Zentrum"))
-        fig.add_trace(go.Scatter(x=[score,score],y=[score,kelley],mode="markers",marker=dict(size=11,color=["#2878b5","#d97706"]),name="Aktueller Testwert"))
+        fig.add_trace(go.Scatter(x=[score,score],y=[score,estimated_true],mode="markers",marker=dict(size=11,color=["#2878b5","#d97706"]),name="Aktueller Testwert"))
         if cutoff is not None:
             fig.add_hline(y=cutoff,line_dash="dashdot",line_color="#8b1e3f",annotation_text="Entscheidungsgrenze")
         fig.update_layout(height=450,xaxis=dict(title="Beobachteter Testwert X",range=[min(grid[0],score-sd*.1),max(grid[-1],score+sd*.1)],fixedrange=True),
             yaxis=dict(title="Schätzung und Intervall für den wahren Wert",fixedrange=True),legend=dict(orientation="h",y=1.28),margin=dict(t=100),dragmode=False)
         st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
         st.caption("Bei gleicher Reliabilität und Standardabweichung bleiben die Intervallbreiten über X konstant: Das Beispiel verwendet konstante Fehlervarianzen. Testwertabhängige Messfehler, etwa aus IRT-Modellen, werden hier nicht modelliert.")
-    st.info("Zwei unterschiedliche Aussagen: Das klassische Intervall X ± z·SEM ist bei normalverteilten, konstanten Messfehlern ein Konfidenzintervall für einen festen wahren Wert. Das Kelley-Intervall beschreibt unter einem passenden normalverteilten Populationsmodell die bedingte Verteilung wahrer Werte bei gegebenem X. Es hat nicht automatisch dieselbe Überdeckung für jede einzelne Person. Deshalb bedeutet ein schmaleres Kelley-Intervall nicht allgemein eine überlegene Diagnose.")
+    st.info("Zwei unterschiedliche Aussagen: Das klassische Intervall X ± z·SEM ist bei normalverteilten, konstanten Messfehlern ein Konfidenzintervall für einen festen wahren Wert. Das regressionsbasierte Intervall beschreibt unter einem passenden normalverteilten Populationsmodell die bedingte Verteilung wahrer Werte bei gegebenem X. Es hat nicht automatisch dieselbe Überdeckung für jede einzelne Person. Deshalb bedeutet ein schmaleres regressionsbasiertes Intervall nicht allgemein eine überlegene Diagnose.")
     if reliability < .10:
-        st.warning("Bei Reliabilität nahe 0 wird die Kelley-Schätzung fast vollständig vom Gruppenmittel bestimmt. Bei exakt 0 enthält das angenommene Modell keine Unterschiede in den wahren Werten; das Kelley-Intervall schrumpft deshalb auf M. Das ist eine Konsequenz dieses Modells, kein Beleg für präzise individuelle Messung.")
+        st.warning("Bei Reliabilität nahe 0 wird die regressionsbasierte Schätzung fast vollständig vom Gruppenmittel bestimmt. Bei exakt 0 enthält das angenommene Modell keine Unterschiede in den wahren Werten; das regressionsbasierte Intervall schrumpft deshalb auf M. Das ist eine Konsequenz dieses Modells, kein Beleg für präzise individuelle Messung.")
     if show_cut:
         st.write("Die Grenze dient dem Vergleich: Reicht ein Intervall über die Grenze, ist eine harte Zuordnung besonders unsicher. Auch ein vollständig auf einer Seite liegendes Intervall garantiert keine fehlerfreie Entscheidung. Welche zusätzlichen Informationen nötig sind, hängt von den Folgen falsch positiver und falsch negativer Entscheidungen ab.")
     st.markdown("Methodischer Hintergrund: [Bias and precision in true-score estimation](https://doi.org/10.1111/bmsp.70058).")
@@ -2678,20 +2610,16 @@ def reliability_intervals():
 def module_reliability():
     version_badge()
     st.title("6 · Reliabilitätsschätzung")
-    st.caption("Vom Verlängern eines Tests über Itemzusammenhänge bis zur modellbasierten Schätzung. Wir betrachten jeweils die Reliabilität eines ungewichteten Summenscores.")
-    section = st.radio("Lernschritt", ["6A · Spearman–Brown", "6B · Itemkorrelationen und Alpha", "6C · Alpha versus Omega", "6D · Testwerte und Intervalle"], horizontal=True, key="rel_section")
+    st.caption("Vom Verlängern eines Tests über Itemzusammenhänge bis zur Unsicherheit einzelner Testwerte. Wir betrachten jeweils die Reliabilität eines ungewichteten Summenscores.")
+    section = st.radio("Lernschritt", ["6A · Spearman–Brown", "6B · Itemkorrelationen und Alpha", "6C · Testwerte und Intervalle"], horizontal=True, key="rel_section")
     if section.startswith("6A"):
         reliability_length()
     elif section.startswith("6B"):
         reliability_correlations()
-    elif section.startswith("6C"):
-        reliability_alpha_omega()
     else:
         reliability_intervals()
     with st.expander("Einordnen und weiterlesen"):
         st.write("Interne Konsistenz ist keine Prüfung der zeitlichen Stabilität. Für Retest- und Paralleltestschätzungen braucht man entsprechende zusätzliche Messungen. Reliabilität hängt auch von der untersuchten Personengruppe ab. Ein hoher Wert allein beantwortet weder die Validitätsfrage noch die Frage nach den Folgen von Fehlentscheidungen.")
-        st.markdown("Flora, D. B. (2020). *Your coefficient alpha is probably wrong, but which coefficient omega is right?* https://doi.org/10.1177/2515245920951747")
-        st.markdown("Deng, L., & Chan, W. (2017). *Testing the difference between reliability coefficients alpha and omega.* https://pmc.ncbi.nlm.nih.gov/articles/PMC5965544/")
 
 
 # Router
