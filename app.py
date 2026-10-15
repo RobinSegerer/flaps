@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.6.2"
+APP_VERSION = "1.6.3"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2473,35 +2473,36 @@ def reliability_heatmap(matrix, title):
 
 def reliability_length():
     learning_question("Wie viel Testlänge brauchen wir, um die Reliabilität zu erhöhen – und wann lohnt sich eine weitere Verlängerung kaum noch?")
-    initial = st.slider("Reliabilität des Ausgangstests Y", 0.05, 0.95, 0.60, 0.05, key="rel_sb_initial")
-    length = st.slider("Items im Ausgangstest Y", 4, 40, 10, key="rel_sb_length")
-    new_length = st.slider("Items im veränderten Test Yₖ", 2, 200, 20, key="rel_sb_newlength")
+    initial = st.slider("Reliabilität des Ausgangstests Yₐ", 0.05, 0.95, 0.60, 0.05, key="rel_sb_initial")
+    length = st.slider("Items im Ausgangstest Yₐ", 4, 40, 10, key="rel_sb_length")
+    new_length = st.slider("Items im veränderten Test Y", 2, 200, 20, key="rel_sb_newlength")
     target = st.slider("Gewünschte Reliabilität (Planungsziel)", 0.50, 0.99, 0.80, 0.01, key="rel_sb_target")
     k = new_length / length
     predicted = k * initial / (1+(k-1)*initial)
     needed_k = target*(1-initial)/(initial*(1-target))
     needed_items = max(1, int(np.ceil(length*needed_k-1e-10)))
-    metric_row([("Längenfaktor k", f"{k:.2f}"), ("Rel(Yₖ)", f"{predicted:.3f}"),
+    metric_row([("Längenfaktor k", f"{k:.2f}"), ("Rel(Y)", f"{predicted:.3f}"),
                 ("Items für das Planungsziel", str(needed_items))])
     grid = np.arange(1, max(200, min(needed_items+10, 500))+1)
     factors = grid / length
     curve = factors*initial/(1+(factors-1)*initial)
     fig = go.Figure(go.Scatter(x=grid, y=curve, mode="lines", name="Spearman–Brown"))
     fig.add_trace(go.Scatter(x=[length, new_length], y=[initial, predicted], mode="markers+text",
-        text=["Ausgangstest Y", "Veränderter Test Yₖ"], textposition="bottom right", marker=dict(size=13), name="Ihre Tests"))
+        text=["Ausgangstest Yₐ", "Veränderter Test Y"], textposition="bottom right", marker=dict(size=13), name="Ihre Tests"))
     fig.add_hline(y=target, line_dash="dot", annotation_text="Planungsziel")
     fig.update_layout(height=420, xaxis=dict(title="Anzahl vergleichbarer Items", range=[0, max(45, min(needed_items+5, len(grid)), new_length+5)], fixedrange=True),
         yaxis=dict(title="Reliabilität", range=[0,1.02], fixedrange=True), dragmode=False)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-    st.latex(r"Rel(Y_k)=\frac{k\,Rel(Y)}{1+(k-1)Rel(Y)},\qquad k=\frac{\text{neue Testlänge}}{\text{ursprüngliche Testlänge}}")
-    st.latex(r"k=2:\quad Rel(Y_2)=\frac{2\,Rel(Y)}{1+Rel(Y)}")
+    st.latex(r"Rel(Y)=\frac{k\,Rel(Y_a)}{1+(k-1)Rel(Y_a)},\qquad k=\frac{\text{neue Testlänge}}{\text{ursprüngliche Testlänge}}")
+    st.latex(r"k=2:\quad Rel(Y)=\frac{2\,Rel(Y_a)}{1+Rel(Y_a)}=\frac{2\,Corr(Y_a,Y_{a^{\prime}})}{1+Corr(Y_a,Y_{a^{\prime}})}")
+    st.caption("Y: veränderter Gesamttest · Yₐ: Ausgangstest bzw. erste Hälfte · Yₐ′: parallele zweite Hälfte · k: neue Itemzahl geteilt durch ursprüngliche Itemzahl.")
     st.write("**Ausprobieren:** Verdoppeln und halbieren Sie die Itemzahl. Setzen Sie dann das Planungsziel auf .90 und .95. Beobachten Sie den zusätzlichen Aufwand für immer kleinere Verbesserungen.")
     st.info("Die Prognose setzt eine vergleichbare Qualität der hinzugefügten Items und passende Annahmen über die Fehler voraus; parallel aufgebaute Testteile sind der klassische Fall. Zusätzliche schlechte oder redundante Items erfüllen diese Bedingung nicht automatisch. Das Planungsziel ist frei wählbar und keine allgemeine Gütegrenze.")
     with st.expander("Split-Half: Von der Korrelation zweier Hälften zum ganzen Test"):
         half_r = st.slider("Korrelation zweier gleich langer Testhälften", 0.0, 0.95, 0.50, 0.05, key="rel_half_r")
         st.metric("Split-Half-Schätzung für den ganzen Test", f"{2*half_r/(1+half_r):.3f}")
-        st.latex(r"\widehat{Rel}(Y)=\frac{2\,Cor(Y_a,Y_b)}{1+Cor(Y_a,Y_b)}")
-        st.caption("Y = Yₐ + Yᵦ. Die Interpretation setzt passende, insbesondere parallele Hälften voraus. Verschiedene Aufteilungen können verschiedene Schätzwerte ergeben. Die Halbtestkorrelation ist nicht bereits die Reliabilität des ganzen Tests.")
+        st.latex(r"\widehat{Rel}(Y)=\frac{2\,Corr(Y_a,Y_{a^{\prime}})}{1+Corr(Y_a,Y_{a^{\prime}})}")
+        st.caption("Y = Yₐ + Yₐ′. Yₐ ist die erste Hälfte, Yₐ′ die parallele zweite Hälfte. Die Interpretation setzt passende, insbesondere parallele Hälften voraus. Verschiedene Aufteilungen können verschiedene Schätzwerte ergeben. Die Halbtestkorrelation ist nicht bereits die Reliabilität des ganzen Tests.")
 
 
 def reliability_correlations():
@@ -2544,9 +2545,9 @@ def reliability_intervals():
     from statistics import NormalDist
     learning_question("Was bedeutet die Reliabilität für die Unsicherheit eines einzelnen Testwerts – und warum unterscheiden sich Messfehler- und Schätzfehlerintervalle?")
     a, b, c = st.columns(3)
-    score = a.number_input("Beobachteter Testwert X", min_value=-200.0, max_value=300.0, value=115.0, step=1.0, key="rel_ci_score")
+    score = a.number_input("Beobachteter Testwert Y", min_value=-200.0, max_value=300.0, value=115.0, step=1.0, key="rel_ci_score")
     mean_score = b.number_input("Mittelwert der Bezugsgruppe M", min_value=-100.0, max_value=200.0, value=100.0, step=1.0, key="rel_ci_mean")
-    sd = c.number_input("Standardabweichung der Testwerte SD(X)", min_value=1.0, max_value=100.0, value=15.0, step=1.0, key="rel_ci_sd")
+    sd = c.number_input("Standardabweichung der Testwerte SD(Y)", min_value=1.0, max_value=100.0, value=15.0, step=1.0, key="rel_ci_sd")
     reliability = st.slider("Reliabilität für den ausgewählten Test", 0.0, 1.0, 0.80, 0.01, key="rel_ci_r")
     coverage = st.selectbox("Intervallniveau", [90, 95, 99], index=1, key="rel_ci_level")
     z = NormalDist().inv_cdf(0.5+coverage/200)
@@ -2554,9 +2555,9 @@ def reliability_intervals():
     metric_row([("Standardmessfehler", f"{sem:.2f}"), ("Standardschätzfehler", f"{see:.2f}"), ("Regressionsbasierte Schätzung des wahren Werts", f"{estimated_true:.2f}")])
     st.dataframe(pd.DataFrame({"Verfahren": ["Standardmessfehler", "Standardschätzfehler (Regression)"],
         "Intervallzentrum": [score,estimated_true], "Untere Grenze": [classic[0],regression[0]], "Obere Grenze": [classic[1],regression[1]]}), hide_index=True)
-    st.latex(r"SEM=SD(X)\sqrt{1-Rel(X)},\qquad I_{\mathrm{Mess}}=X\pm z\cdot SEM")
-    st.latex(r"\hat T=M+Rel(X)(X-M),\quad SEE=SD(X)\sqrt{Rel(X)(1-Rel(X))},\quad I_{\mathrm{Schätz}}=\hat T\pm z\cdot SEE")
-    st.caption(f"Zweiseitiges {coverage}%-Niveau: z = {z:.3f}. M und SD(X) stammen aus derselben relevanten Bezugsgruppe wie die Reliabilität. Die Unsicherheit dieser drei Kennwerte selbst wird hier nicht zusätzlich berücksichtigt.")
+    st.latex(r"SEM=SD(Y)\sqrt{1-Rel(Y)},\qquad I_{\mathrm{Mess}}=Y\pm z\cdot SEM")
+    st.latex(r"\hat T=M+Rel(Y)(Y-M),\quad SEE=SD(Y)\sqrt{Rel(Y)(1-Rel(Y))},\quad I_{\mathrm{Schätz}}=\hat T\pm z\cdot SEE")
+    st.caption(f"Zweiseitiges {coverage}%-Niveau: z = {z:.3f}. M und SD(Y) stammen aus derselben relevanten Bezugsgruppe wie die Reliabilität. Die Unsicherheit dieser drei Kennwerte selbst wird hier nicht zusätzlich berücksichtigt.")
     comparison = st.multiselect("Weitere Reliabilitäten zum Vergleich", [0.0,0.20,0.40,0.60,0.80,0.90,0.95,1.0], default=[0.60,0.90], key="rel_ci_compare")
     rs = sorted(set(comparison+[reliability]))
     show_cut = st.checkbox("Entscheidungsgrenze einblenden", key="rel_ci_showcut")
@@ -2572,7 +2573,7 @@ def reliability_intervals():
                 marker=dict(size=11,color=color),error_x=dict(type="data",array=errors,color=color,thickness=3),
                 hovertemplate="Intervallzentrum: %{x:.2f}<extra>"+label+"</extra>"))
         fig.add_vline(x=mean_score,line_dash="dot",annotation_text="Gruppenmittel M")
-        fig.add_vline(x=score,line_dash="dash",annotation_text="Testwert X",annotation_position="bottom right")
+        fig.add_vline(x=score,line_dash="dash",annotation_text="Testwert Y",annotation_position="bottom right")
         if cutoff is not None:
             fig.add_vline(x=cutoff,line_color="#8b1e3f",line_dash="dashdot",annotation_text="Entscheidungsgrenze")
         bounds=[v for row in rows for pair in row[3:] for v in pair]+[score,mean_score]
@@ -2582,7 +2583,7 @@ def reliability_intervals():
             yaxis=dict(title="Reliabilität",tickvals=list(range(len(rs))),ticktext=[f"{r:.2f}"+(" ← ausgewählt" if r==reliability else "") for r in rs],range=[-.5,len(rs)-.5],fixedrange=True),
             legend=dict(orientation="h",y=1.2),dragmode=False)
         st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
-        st.write("**Ausprobieren:** Verschieben Sie X weit über oder unter den Mittelwert. Bei kleiner Reliabilität wandert die regressionsbasierte Schätzung stärker zum Gruppenmittel; das Messfehlerintervall bleibt um X zentriert.")
+        st.write("**Ausprobieren:** Verschieben Sie Y weit über oder unter den Mittelwert. Bei kleiner Reliabilität wandert die regressionsbasierte Schätzung stärker zum Gruppenmittel; das Messfehlerintervall bleibt um Y zentriert.")
     with second:
         grid = np.linspace(mean_score-3*sd,mean_score+3*sd,101)
         centers = mean_score+reliability*(grid-mean_score)
@@ -2595,11 +2596,26 @@ def reliability_intervals():
         fig.add_trace(go.Scatter(x=[score,score],y=[score,estimated_true],mode="markers",marker=dict(size=11,color=["#2878b5","#d97706"]),name="Aktueller Testwert"))
         if cutoff is not None:
             fig.add_hline(y=cutoff,line_dash="dashdot",line_color="#8b1e3f",annotation_text="Entscheidungsgrenze")
-        fig.update_layout(height=450,xaxis=dict(title="Beobachteter Testwert X",range=[min(grid[0],score-sd*.1),max(grid[-1],score+sd*.1)],fixedrange=True),
+        fig.update_layout(height=450,xaxis=dict(title="Beobachteter Testwert Y",range=[min(grid[0],score-sd*.1),max(grid[-1],score+sd*.1)],fixedrange=True),
             yaxis=dict(title="Schätzung und Intervall für den wahren Wert",fixedrange=True),legend=dict(orientation="h",y=1.28),margin=dict(t=100),dragmode=False)
         st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
-        st.caption("Bei gleicher Reliabilität und Standardabweichung bleiben die Intervallbreiten über X konstant: Das Beispiel verwendet konstante Fehlervarianzen. Testwertabhängige Messfehler, etwa aus IRT-Modellen, werden hier nicht modelliert.")
-    st.info("Zwei unterschiedliche Aussagen: Das klassische Intervall X ± z·SEM ist bei normalverteilten, konstanten Messfehlern ein Konfidenzintervall für einen festen wahren Wert. Das regressionsbasierte Intervall beschreibt unter einem passenden normalverteilten Populationsmodell die bedingte Verteilung wahrer Werte bei gegebenem X. Es hat nicht automatisch dieselbe Überdeckung für jede einzelne Person. Deshalb bedeutet ein schmaleres regressionsbasiertes Intervall nicht allgemein eine überlegene Diagnose.")
+        st.caption("Bei gleicher Reliabilität und Standardabweichung bleiben die Intervallbreiten über Y konstant: Das Beispiel verwendet konstante Fehlervarianzen. Testwertabhängige Messfehler, etwa aus IRT-Modellen, werden hier nicht modelliert.")
+    with st.expander("Warum wird der Standardschätzfehler empfohlen? Regression zur Mitte", expanded=True):
+        st.write("Ein extremer beobachteter Testwert kann aus einer extremen Merkmalsausprägung und einem zufälligen Messfehler entstehen. Unter dem hier angenommenen Modell haben Personen mit sehr hohen beobachteten Werten im Mittel auch positive Messfehler; bei sehr niedrigen Werten ist es umgekehrt. Deshalb ist der erwartete wahre Wert weniger extrem als der beobachtete Wert.")
+        st.write(f"**Ihr Beispiel:** Y = {score:.1f}, M = {mean_score:.1f}, Rel(Y) = {reliability:.2f}. "
+                 f"Von der Abweichung Y − M = {score-mean_score:+.1f} bleiben in der Schätzung "
+                 f"{reliability:.2f} × ({score-mean_score:+.1f}) = {estimated_true-mean_score:+.1f}. "
+                 f"Der geschätzte wahre Wert ist **{estimated_true:.1f}**.")
+        st.write("Bei einer unabhängigen parallelen Wiederholungsmessung wäre unter diesem Modell derselbe weniger extreme Wert im Mittel zu erwarten. Das ist Regression zur Mitte: Es muss keine echte Veränderung der Fähigkeit stattgefunden haben. Der wahre Wert selbst bewegt sich dabei nicht zum Mittelwert; unsere Schätzung berücksichtigt die zusätzliche Information aus der Bezugsgruppe.")
+        mse_classic = sd**2*(1-reliability)
+        mse_regression = sd**2*reliability*(1-reliability)
+        metric_row([("Mittlerer quadratischer Fehler: Y als Schätzung", f"{mse_classic:.2f}"),
+                    ("Mittlerer quadratischer Fehler: Regression", f"{mse_regression:.2f}")])
+        st.caption("Diese Fehler beziehen sich auf die gesamte angenommene Population, nicht auf die einzelne ausgewählte Person. Einheit: Testwertpunkte². Die Bezugsgruppenparameter werden als bekannt behandelt.")
+        st.write("**Der Grund für die Empfehlung:** Wenn das Modell und die Bezugsgruppe passen, vermindert die regressionsbasierte Schätzung den durchschnittlichen quadratischen Schätzfehler. Der Standardschätzfehler beschreibt die verbleibende Streuung der wahren Werte um diese Schätzung. Er gehört deshalb zum regressionsbasierten Intervall; er darf nicht einfach als kleinerer Fehler um den unveränderten Testwert gelegt werden.")
+        st.write("**Die Abwägung:** Die Schätzung nutzt Gruppeninformation und ist für eine Person mit festem, dauerhaft extremem wahrem Wert im Allgemeinen verzerrt zur Mitte. Eine ungeeignete Bezugsgruppe kann ebenfalls irreführen. Für Entscheidungen zählt daher, welche Fehler im konkreten Fall besonders folgenreich sind; das schmalere Intervall allein entscheidet nicht über das bessere Verfahren.")
+        st.write("**Ausprobieren:** Wählen Sie einen Testwert zwei Standardabweichungen über dem Mittelwert. Vergleichen Sie Reliabilität .50 und .95 und betrachten Sie die Ansicht ‚Verschiedene Testwerte‘. Setzen Sie Y anschließend genau auf M: Die Intervallzentren stimmen dann überein, die Breiten im Allgemeinen nicht.")
+    st.info("Zwei unterschiedliche Aussagen: Das klassische Intervall Y ± z·SEM ist bei normalverteilten, konstanten Messfehlern ein Konfidenzintervall für einen festen wahren Wert. Das regressionsbasierte Intervall beschreibt unter einem passenden normalverteilten Populationsmodell die bedingte Verteilung wahrer Werte bei gegebenem Y. Es hat nicht automatisch dieselbe Überdeckung für jede einzelne Person. Deshalb bedeutet ein schmaleres regressionsbasiertes Intervall nicht allgemein eine überlegene Diagnose.")
     if reliability < .10:
         st.warning("Bei Reliabilität nahe 0 wird die regressionsbasierte Schätzung fast vollständig vom Gruppenmittel bestimmt. Bei exakt 0 enthält das angenommene Modell keine Unterschiede in den wahren Werten; das regressionsbasierte Intervall schrumpft deshalb auf M. Das ist eine Konsequenz dieses Modells, kein Beleg für präzise individuelle Messung.")
     if show_cut:
