@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.6.0"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -362,6 +362,7 @@ def sidebar():
             "3 · Summenscores",
             "4 · Klassische Testtheorie",
             "5 · Itemanalyse",
+            "6 · Reliabilitätsschätzung",
         ],
         index=[
             "1 · Mittelwert & Varianz",
@@ -369,6 +370,7 @@ def sidebar():
             "3 · Summenscores",
             "4 · Klassische Testtheorie",
             "5 · Itemanalyse",
+            "6 · Reliabilitätsschätzung",
         ].index(
             st.session_state.module
             if st.session_state.module in [
@@ -377,6 +379,7 @@ def sidebar():
                 "3 · Summenscores",
                 "4 · Klassische Testtheorie",
                 "5 · Itemanalyse",
+                "6 · Reliabilitätsschätzung",
             ]
             else "2 · Zusammenhang zweier Variablen"
         )
@@ -2453,6 +2456,168 @@ def module6():
         ])
 
 # -----------------------------
+def alpha_from_covariance(matrix):
+    matrix = np.asarray(matrix, dtype=float)
+    n = len(matrix)
+    total = float(matrix.sum())
+    return n / (n-1) * (1-float(np.trace(matrix))/total) if total > 1e-12 else np.nan
+
+
+def reliability_heatmap(matrix, title):
+    names = [f"Item {i+1}" for i in range(len(matrix))]
+    fig = go.Figure(go.Heatmap(z=matrix, x=names, y=names, zmin=-1, zmax=1,
+        colorscale="RdBu", reversescale=True, text=np.round(matrix, 2), texttemplate="%{text:.2f}"))
+    fig.update_layout(title=title, height=390, margin=dict(t=45, b=25))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def reliability_length():
+    learning_question("Wie viel Testlänge brauchen wir, um die Reliabilität zu erhöhen – und wann lohnt sich eine weitere Verlängerung kaum noch?")
+    initial = st.slider("Reliabilität des Ausgangstests Y", 0.05, 0.95, 0.60, 0.05, key="rel_sb_initial")
+    length = st.slider("Items im Ausgangstest Y", 4, 40, 10, key="rel_sb_length")
+    new_length = st.slider("Items im veränderten Test Yₖ", 2, 200, 20, key="rel_sb_newlength")
+    target = st.slider("Gewünschte Reliabilität (Planungsziel)", 0.50, 0.99, 0.80, 0.01, key="rel_sb_target")
+    k = new_length / length
+    predicted = k * initial / (1+(k-1)*initial)
+    needed_k = target*(1-initial)/(initial*(1-target))
+    needed_items = max(1, int(np.ceil(length*needed_k-1e-10)))
+    metric_row([("Längenfaktor k", f"{k:.2f}"), ("Rel(Yₖ)", f"{predicted:.3f}"),
+                ("Items für das Planungsziel", str(needed_items))])
+    grid = np.arange(1, max(200, min(needed_items+10, 500))+1)
+    factors = grid / length
+    curve = factors*initial/(1+(factors-1)*initial)
+    fig = go.Figure(go.Scatter(x=grid, y=curve, mode="lines", name="Spearman–Brown"))
+    fig.add_trace(go.Scatter(x=[length, new_length], y=[initial, predicted], mode="markers+text",
+        text=["Ausgangstest Y", "Veränderter Test Yₖ"], textposition="bottom right", marker=dict(size=13), name="Ihre Tests"))
+    fig.add_hline(y=target, line_dash="dot", annotation_text="Planungsziel")
+    fig.update_layout(height=420, xaxis=dict(title="Anzahl vergleichbarer Items", range=[0, max(45, min(needed_items+5, len(grid)), new_length+5)], fixedrange=True),
+        yaxis=dict(title="Reliabilität", range=[0,1.02], fixedrange=True), dragmode=False)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.latex(r"Rel(Y_k)=\frac{k\,Rel(Y)}{1+(k-1)Rel(Y)},\qquad k=\frac{\text{neue Testlänge}}{\text{ursprüngliche Testlänge}}")
+    st.latex(r"k=2:\quad Rel(Y_2)=\frac{2\,Rel(Y)}{1+Rel(Y)}")
+    st.write("**Ausprobieren:** Verdoppeln und halbieren Sie die Itemzahl. Setzen Sie dann das Planungsziel auf .90 und .95. Beobachten Sie den zusätzlichen Aufwand für immer kleinere Verbesserungen.")
+    st.info("Die Prognose setzt eine vergleichbare Qualität der hinzugefügten Items und passende Annahmen über die Fehler voraus; parallel aufgebaute Testteile sind der klassische Fall. Zusätzliche schlechte oder redundante Items erfüllen diese Bedingung nicht automatisch. Das Planungsziel ist frei wählbar und keine allgemeine Gütegrenze.")
+    with st.expander("Split-Half: Von der Korrelation zweier Hälften zum ganzen Test"):
+        half_r = st.slider("Korrelation zweier gleich langer Testhälften", 0.0, 0.95, 0.50, 0.05, key="rel_half_r")
+        st.metric("Split-Half-Schätzung für den ganzen Test", f"{2*half_r/(1+half_r):.3f}")
+        st.latex(r"\widehat{Rel}(Y)=\frac{2\,Cor(Y_a,Y_b)}{1+Cor(Y_a,Y_b)}")
+        st.caption("Y = Yₐ + Yᵦ. Die Interpretation setzt passende, insbesondere parallele Hälften voraus. Verschiedene Aufteilungen können verschiedene Schätzwerte ergeben. Die Halbtestkorrelation ist nicht bereits die Reliabilität des ganzen Tests.")
+
+
+def reliability_correlations():
+    learning_question("Wie hängen Itemzahl, Itemkorrelationen und Cronbachs Alpha zusammen?")
+    n = st.slider("Anzahl Items", 3, 8, 5, key="rel_corr_n")
+    mode = st.radio("Itemzusammenhänge einstellen", ["Alle Korrelationen gemeinsam", "Jedes Itempaar selbst einstellen"], horizontal=True, key="rel_corr_mode")
+    if mode.startswith("Alle"):
+        r = st.slider("Korrelation zwischen je zwei Items", 0.0, 0.90, 0.30, 0.05, key="rel_corr_r")
+        matrix = np.full((n,n), r)
+        np.fill_diagonal(matrix, 1)
+    else:
+        pairs = [(i,j) for i in range(n) for j in range(i+1,n)]
+        data = pd.DataFrame({"Item A": [i+1 for i,j in pairs], "Item B": [j+1 for i,j in pairs], "Korrelation": [0.30]*len(pairs)})
+        edited = st.data_editor(data, hide_index=True, disabled=["Item A", "Item B"], key=f"rel_pairs_{n}",
+            column_config={"Korrelation": st.column_config.NumberColumn(min_value=-0.95, max_value=0.95, step=0.05, required=True)})
+        matrix = np.eye(n)
+        for (i,j), value in zip(pairs, edited["Korrelation"]):
+            matrix[i,j] = matrix[j,i] = float(value)
+    reliability_heatmap(matrix, "Ihre Itemkorrelationen")
+    if not np.isfinite(matrix).all() or np.linalg.eigvalsh(matrix).min() < -1e-8:
+        st.warning("Diese Korrelationen können nicht gemeinsam vorkommen. Beispiel: Wenn A und B sehr ähnlich sind und B und C ebenfalls, können A und C nicht zugleich stark gegensätzlich sein. Passen Sie die Werte an.")
+        return
+    average = float(matrix[np.triu_indices(n,1)].mean())
+    alpha = alpha_from_covariance(matrix)
+    metric_row([("Mittlere Itemkorrelation r̄", f"{average:.3f}"), ("Standardisiertes Cronbachs α", f"{alpha:.3f}" if np.isfinite(alpha) else "nicht definiert")])
+    st.latex(r"\alpha_{\mathrm{standardisiert}}=\frac{m\,\bar r}{1+(m-1)\bar r}")
+    st.caption("m = Itemzahl. Hier sind alle Itemvarianzen 1; deshalb entspricht dieses Alpha dem Alpha des Summenscores. Bei unterschiedlichen Varianzen unterscheiden sich standardisiertes Alpha und Alpha für den ursprünglichen Summenscore.")
+    st.write("**Ausprobieren:** Erhöhen Sie bei gleicher Korrelation die Itemzahl. Stellen Sie danach ein einzelnes Item so ein, dass es mit allen anderen negativ korreliert. Prüfen Sie: Könnte ein noch nicht umgepoltes Item vorliegen?")
+    st.info("Alpha lässt sich aus einer Kovarianzmatrix berechnen. Ob es die Reliabilität gut beschreibt, hängt vom Messmodell ab. Ein hohes Alpha beweist weder Eindimensionalität noch Validität; viele sehr ähnliche Items können Alpha erhöhen, ohne den Inhalt besser abzudecken. Negative Alpha-Werte bleiben sichtbar.")
+
+
+def fit_onefactor_omega(covariance_matrix):
+    """Unweighted least squares fit of a positive one-factor model, diagonal residuals."""
+    from scipy.optimize import least_squares
+    s = np.asarray(covariance_matrix, dtype=float)
+    idx = np.triu_indices(len(s), 1)
+    upper = np.sqrt(np.diag(s)*0.999)
+    start = np.minimum(np.full(len(s), np.sqrt(max(float(s[idx].mean()), 0.01))), upper*0.8)
+    result = least_squares(lambda loading: (np.outer(loading,loading)-s)[idx], start,
+                           bounds=(np.full(len(s), 0.0001), upper), max_nfev=1000)
+    loading = result.x
+    residual = np.diag(s)-loading**2
+    omega = float(loading.sum()**2/(loading.sum()**2+residual.sum()))
+    rms = float(np.sqrt(np.mean(result.fun**2)))
+    return omega, loading, residual, rms, result.success
+
+
+def reliability_alpha_omega():
+    learning_question("Wann stimmen Alpha und Omega überein – und was müssen wir für Omega über die Items annehmen?")
+    st.write("**Cronbachs α** wird aus den Itemvarianzen und -kovarianzen berechnet. **McDonalds ω** trennt mithilfe eines Faktorenmodells gemeinsame Merkmalsvarianz und Messfehler. Verändern Sie die Itemstruktur und beobachten Sie beide Werte.")
+    structure = st.radio("Messmodell", ["Gleiche Ladungen", "Ungleiche Ladungen", "Ladungen selbst einstellen"], horizontal=True, key="rel_ao_structure")
+    base = st.slider("Stärke des gemeinsamen Merkmals in den Items", 0.15, 0.85, 0.60, 0.05, key="rel_ao_base")
+    spread = st.slider("Unterschiede zwischen den Items", 0.0, 0.70, 0.50, 0.05, key="rel_ao_spread") if structure == "Ungleiche Ladungen" else 0
+    loadings = np.clip(base + np.linspace(-spread, spread, 6), 0.05, 0.95)
+    if structure == "Ladungen selbst einstellen":
+        cols = st.columns(3)
+        loadings = np.array([cols[i%3].slider(f"Ladung Item {i+1}", 0.05, 0.95, 0.60, 0.05, key=f"rel_loading_{i}") for i in range(6)])
+    st.caption("Ladung = Stärke des Zusammenhangs mit demselben latenten Merkmal. Alle Items haben in der Population Varianz 1; die Fehlervarianz ist jeweils 1 − Ladung². Die Beispiele verwenden kontinuierliche Itemwerte.")
+    rho = st.slider("Gemeinsamer Messfehler von Item 1 und 2 (Fehlerkorrelation)", 0.0, 0.70, 0.0, 0.05, key="rel_ao_error")
+    theta = np.diag(1-loadings**2)
+    theta[0,1] = theta[1,0] = rho*np.sqrt(theta[0,0]*theta[1,1])
+    sigma = np.outer(loadings,loadings)+theta
+    signal = float(loadings.sum()**2)
+    truth = signal/float(sigma.sum())
+    alpha = alpha_from_covariance(sigma)
+    metric_row([("α der Population", f"{alpha:.3f}"), ("ω bei bekanntem korrektem Modell", f"{truth:.3f}"), ("α minus ω", f"{alpha-truth:+.3f}")])
+    reliability_heatmap(sigma, "Itemkorrelationen aus Ihrem Messmodell")
+    st.dataframe(pd.DataFrame({"Item": np.arange(1,7), "Ladung λ": loadings, "Fehlervarianz": np.diag(theta)}), hide_index=True)
+    if rho > 0:
+        st.warning("Die Fehler von Item 1 und 2 hängen zusammen. Ihre zusätzliche Korrelation ist kein Signal des Zielmerkmals. Das hier gezeigte korrekte Omega berücksichtigt diese Fehlerkovarianz; ein Modell, das sie ignoriert, kann ebenfalls irreführen.")
+    elif np.ptp(loadings) < 1e-8:
+        st.success("Gleiche Ladungen und unkorrelierte Fehler: Alpha und Omega entsprechen hier beide der Reliabilität des Summenscores.")
+    else:
+        st.info("Ungleiche Ladungen bei unkorrelierten Fehlern: Alpha liegt hier unter der Reliabilität; Omega nutzt die unterschiedlichen Ladungen. Wie groß die Differenz ist, hängt von der konkreten Itemstruktur ab.")
+    st.latex(r"\alpha=\frac{m}{m-1}\left(1-\frac{\sum Var(X_i)}{Var(\sum X_i)}\right)")
+    st.latex(r"\omega=\frac{(\sum\lambda_i)^2}{(\sum\lambda_i)^2+\mathbf{1}'\Theta\mathbf{1}}\quad [Var(F)=1]")
+    st.caption("Bei unkorrelierten Fehlern ist 1′Θ1 einfach die Summe der Fehlervarianzen. Hier bedeutet Reliabilität den Varianzanteil des gemeinsamen Zielmerkmals im ungewichteten Summenscore; die korrelierten Fehler zählen zum Fehler. Das Beispiel behandelt ein gemeinsames Merkmal; mehrdimensionale Omega-Varianten werden hier nicht dargestellt.")
+    with st.expander("Von der bekannten Population zur Schätzung aus Antworten", expanded=False):
+        size = st.slider("Personen in der Stichprobe", 50, 1000, 200, 50, key="rel_ao_n")
+        if "rel_ao_sample_seed" not in st.session_state:
+            st.session_state["rel_ao_sample_seed"] = 42
+        if st.button("Neue Personengruppe ziehen", key="rel_ao_draw"):
+            st.session_state["rel_ao_sample_seed"] += 1
+        rng = np.random.default_rng(st.session_state["rel_ao_sample_seed"])
+        z = rng.normal(size=(1000,7))[:size]
+        responses = z[:,[0]]*loadings + z[:,1:] @ np.linalg.cholesky(theta).T
+        s = np.cov(responses, rowvar=False, ddof=1)
+        estimated_omega, fitted, residual, rms, success = fit_onefactor_omega(s)
+        metric_row([("α aus der Stichprobe", f"{alpha_from_covariance(s):.3f}"), ("Geschätztes ω (ein Faktor)", f"{estimated_omega:.3f}"), ("Bekannte Reliabilität", f"{truth:.3f}")])
+        st.caption(f"Omega wird tatsächlich aus den simulierten Antworten geschätzt: Einfaktormodell mit unkorrelierten Fehlern, ungewichtete kleinste Quadrate. Mittlere quadratische Abweichung der Kovarianzen als Wurzel: {rms:.3f} (beschreibend, kein formaler Modelltest).")
+        if not success:
+            st.warning("Die Modellschätzung hat nicht konvergiert. Interpretieren Sie den Omega-Wert nicht.")
+        if rho > 0:
+            st.warning("Absichtlich unpassendes Schätzmodell: Die eingestellte Fehlerkorrelation wird bei dieser Schätzung ignoriert. Vergleichen Sie geschätztes Omega mit der bekannten Reliabilität.")
+        st.write("**Ausprobieren:** Ziehen Sie bei 50 und bei 1000 Personen neue Gruppen. Vergleichen Sie die Schwankungen. Schalten Sie danach die Fehlerkorrelation hinzu: Eine größere Stichprobe behebt kein falsches Modell.")
+        st.dataframe(pd.DataFrame({"Item": np.arange(1,7), "Geschätzte Ladung": fitted, "Geschätzte Fehlervarianz": residual}), hide_index=True)
+    st.write("**Merksatz:** Alpha ist eine Funktion der Itemkovarianzen; Omega benötigt zusätzlich ein begründetes Messmodell. Welcher Koeffizient passt, entscheidet sich an diesem Modell, nicht daran, welcher Wert größer ist.")
+
+
+def module_reliability():
+    version_badge()
+    st.title("6 · Reliabilitätsschätzung")
+    st.caption("Vom Verlängern eines Tests über Itemzusammenhänge bis zur modellbasierten Schätzung. Wir betrachten jeweils die Reliabilität eines ungewichteten Summenscores.")
+    section = st.radio("Lernschritt", ["6A · Spearman–Brown", "6B · Itemkorrelationen und Alpha", "6C · Alpha versus Omega"], horizontal=True, key="rel_section")
+    if section.startswith("6A"):
+        reliability_length()
+    elif section.startswith("6B"):
+        reliability_correlations()
+    else:
+        reliability_alpha_omega()
+    with st.expander("Einordnen und weiterlesen"):
+        st.write("Interne Konsistenz ist keine Prüfung der zeitlichen Stabilität. Für Retest- und Paralleltestschätzungen braucht man entsprechende zusätzliche Messungen. Reliabilität hängt auch von der untersuchten Personengruppe ab. Ein hoher Wert allein beantwortet weder die Validitätsfrage noch die Frage nach den Folgen von Fehlentscheidungen.")
+        st.markdown("Flora, D. B. (2020). *Your coefficient alpha is probably wrong, but which coefficient omega is right?* https://doi.org/10.1177/2515245920951747")
+        st.markdown("Deng, L., & Chan, W. (2017). *Testing the difference between reliability coefficients alpha and omega.* https://pmc.ncbi.nlm.nih.gov/articles/PMC5965544/")
+
+
 # Router
 # -----------------------------
 module = st.session_state.module
@@ -2466,6 +2631,8 @@ elif module.startswith("4"):
     module5()
 elif module.startswith("5"):
     module6()
+elif module.startswith("6"):
+    module_reliability()
 
 st.divider()
 st.caption(
