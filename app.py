@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.6.4"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2505,33 +2505,36 @@ def reliability_length():
         st.caption("Y = Yₐ + Yₐ′. Yₐ ist die erste Hälfte, Yₐ′ die parallele zweite Hälfte. Die Interpretation setzt passende, insbesondere parallele Hälften voraus. Verschiedene Aufteilungen können verschiedene Schätzwerte ergeben. Die Halbtestkorrelation ist nicht bereits die Reliabilität des ganzen Tests.")
 
 
-def reliability_correlations():
-    learning_question("Wie hängen Itemzahl, Itemkorrelationen und Cronbachs Alpha zusammen?")
-    n = st.slider("Anzahl Items", 3, 8, 5, key="rel_corr_n")
-    mode = st.radio("Itemzusammenhänge einstellen", ["Alle Korrelationen gemeinsam", "Jedes Itempaar selbst einstellen"], horizontal=True, key="rel_corr_mode")
-    if mode.startswith("Alle"):
-        r = st.slider("Korrelation zwischen je zwei Items", 0.0, 0.90, 0.30, 0.05, key="rel_corr_r")
-        matrix = np.full((n,n), r)
-        np.fill_diagonal(matrix, 1)
-    else:
-        pairs = [(i,j) for i in range(n) for j in range(i+1,n)]
-        data = pd.DataFrame({"Item A": [i+1 for i,j in pairs], "Item B": [j+1 for i,j in pairs], "Korrelation": [0.30]*len(pairs)})
-        edited = st.data_editor(data, hide_index=True, disabled=["Item A", "Item B"], key=f"rel_pairs_{n}",
-            column_config={"Korrelation": st.column_config.NumberColumn(min_value=-0.95, max_value=0.95, step=0.05, required=True)})
-        matrix = np.eye(n)
-        for (i,j), value in zip(pairs, edited["Korrelation"]):
-            matrix[i,j] = matrix[j,i] = float(value)
-    reliability_heatmap(matrix, "Ihre Itemkorrelationen")
-    if not np.isfinite(matrix).all() or np.linalg.eigvalsh(matrix).min() < -1e-8:
-        st.warning("Diese Korrelationen können nicht gemeinsam vorkommen. Beispiel: Wenn A und B sehr ähnlich sind und B und C ebenfalls, können A und C nicht zugleich stark gegensätzlich sein. Passen Sie die Werte an.")
-        return
-    average = float(matrix[np.triu_indices(n,1)].mean())
+def reliability_covariances():
+    learning_question("Wie verändern die Kovarianzen die Testwertvarianz und Cronbachs Alpha?")
+    st.write("Der Test besteht aus **5 Items mit jeweils Varianz 4**. Die Summe der Einzelvarianzen bleibt deshalb immer **20**. Verändern Sie nur, wie stark die Items gemeinsam variieren.")
+    covariance_value = st.slider("Kovarianz zwischen je zwei Items", 0.0, 4.0, 1.2, 0.2, key="rel_alpha_cov")
+    matrix = np.full((5, 5), covariance_value)
+    np.fill_diagonal(matrix, 4.0)
+    item_variances = float(np.trace(matrix))
+    covariance_contribution = float(matrix.sum()-item_variances)
+    total_variance = float(matrix.sum())
     alpha = alpha_from_covariance(matrix)
-    metric_row([("Mittlere Itemkorrelation r̄", f"{average:.3f}"), ("Standardisiertes Cronbachs α", f"{alpha:.3f}" if np.isfinite(alpha) else "nicht definiert")])
-    st.latex(r"\alpha_{\mathrm{standardisiert}}=\frac{m\,\bar r}{1+(m-1)\bar r}")
-    st.caption("m = Itemzahl. Hier sind alle Itemvarianzen 1; deshalb entspricht dieses Alpha dem Alpha des Summenscores. Bei unterschiedlichen Varianzen unterscheiden sich standardisiertes Alpha und Alpha für den ursprünglichen Summenscore.")
-    st.write("**Ausprobieren:** Erhöhen Sie bei gleicher Korrelation die Itemzahl. Stellen Sie danach ein einzelnes Item so ein, dass es mit allen anderen negativ korreliert. Prüfen Sie: Könnte ein noch nicht umgepoltes Item vorliegen?")
-    st.info("Alpha lässt sich aus einer Kovarianzmatrix berechnen. Ob es die Reliabilität gut beschreibt, hängt vom Messmodell ab. Ein hohes Alpha beweist weder Eindimensionalität noch Validität; viele sehr ähnliche Items können Alpha erhöhen, ohne den Inhalt besser abzudecken. Negative Alpha-Werte bleiben sichtbar.")
+    metric_row([("Summe der Einzelvarianzen", f"{item_variances:.1f}"),
+                ("Testwertvarianz", f"{total_variance:.1f}"), ("Cronbachs α", f"{alpha:.3f}")])
+    fig = go.Figure()
+    categories = ["Summe der Einzelvarianzen", "Varianz des Gesamttestwerts"]
+    fig.add_trace(go.Bar(x=categories, y=[item_variances,item_variances], name="Einzelvarianzen", marker_color="#2878b5",
+        text=[f"{item_variances:.0f}",f"{item_variances:.0f}"],textposition="inside"))
+    fig.add_trace(go.Bar(x=categories, y=[0,covariance_contribution], name="Beitrag der Kovarianzen", marker_color="#d97706",
+        text=["",f"{covariance_contribution:.1f}" if covariance_contribution else ""],textposition="inside"))
+    fig.update_layout(barmode="stack", height=380, yaxis=dict(title="Varianz",range=[0,105],fixedrange=True),
+        xaxis=dict(fixedrange=True),legend=dict(orientation="h",y=1.15),dragmode=False)
+    st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
+    st.latex(r"Var(Y)=\sum_{i=1}^{5}Var(Y_i)+2\sum_{i<j}Cov(Y_i,Y_j)")
+    st.write(f"**Testwertvarianz = {item_variances:.1f} + {covariance_contribution:.1f} = {total_variance:.1f}.** Der orange Anteil berücksichtigt jede Kovarianz zweimal.")
+    st.latex(r"\alpha=\frac{5}{4}\left(1-\frac{\sum_i Var(Y_i)}{Var(Y)}\right)")
+    st.latex(r"\alpha=\frac{5}{4}\left(1-\frac{20}{"+f"{total_variance:.1f}"+r"}\right)="+f"{alpha:.3f}")
+    if covariance_value == 0:
+        st.success("Keine Kovarianzen: Die Testwertvarianz ist genau die Summe der Einzelvarianzen. Der Quotient ist 1 und Alpha ist 0.")
+    else:
+        st.info("Je höher die Kovarianzen bei gleichen Itemvarianzen, desto größer die Testwertvarianz im Verhältnis zur Summe der Einzelvarianzen. Der Quotient wird kleiner – Alpha wird größer.")
+    st.write("**Ausprobieren:** Schieben Sie die Kovarianz zuerst auf 0 und erhöhen Sie sie dann schrittweise. Beobachten Sie den orangefarbenen Anteil, den Quotienten in der Formel und Alpha.")
 
 
 def score_intervals(score, reliability, mean_score, sd_score, z):
@@ -2627,11 +2630,11 @@ def module_reliability():
     version_badge()
     st.title("6 · Reliabilitätsschätzung")
     st.caption("Vom Verlängern eines Tests über Itemzusammenhänge bis zur Unsicherheit einzelner Testwerte. Wir betrachten jeweils die Reliabilität eines ungewichteten Summenscores.")
-    section = st.radio("Lernschritt", ["6A · Spearman–Brown", "6B · Itemkorrelationen und Alpha", "6C · Testwerte und Intervalle"], horizontal=True, key="rel_section")
+    section = st.radio("Lernschritt", ["6A · Spearman–Brown", "6B · Kovarianzen und Alpha", "6C · Testwerte und Intervalle"], horizontal=True, key="rel_section")
     if section.startswith("6A"):
         reliability_length()
     elif section.startswith("6B"):
-        reliability_correlations()
+        reliability_covariances()
     else:
         reliability_intervals()
     with st.expander("Einordnen und weiterlesen"):
