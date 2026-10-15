@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.6.0"
+APP_VERSION = "1.6.1"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2601,17 +2601,93 @@ def reliability_alpha_omega():
     st.write("**Merksatz:** Alpha ist eine Funktion der Itemkovarianzen; Omega benötigt zusätzlich ein begründetes Messmodell. Welcher Koeffizient passt, entscheidet sich an diesem Modell, nicht daran, welcher Wert größer ist.")
 
 
+def score_intervals(score, reliability, mean_score, sd_score, z):
+    sem = sd_score*np.sqrt(1-reliability)
+    see = sd_score*np.sqrt(reliability*(1-reliability))
+    kelley = mean_score+reliability*(score-mean_score)
+    return sem, see, kelley, (score-z*sem, score+z*sem), (kelley-z*see, kelley+z*see)
+
+
+def reliability_intervals():
+    from statistics import NormalDist
+    learning_question("Was bedeutet die Reliabilität für die Unsicherheit eines einzelnen Testwerts – und warum unterscheiden sich Messfehler- und Schätzfehlerintervalle?")
+    a, b, c = st.columns(3)
+    score = a.number_input("Beobachteter Testwert X", min_value=-200.0, max_value=300.0, value=115.0, step=1.0, key="rel_ci_score")
+    mean_score = b.number_input("Mittelwert der Bezugsgruppe M", min_value=-100.0, max_value=200.0, value=100.0, step=1.0, key="rel_ci_mean")
+    sd = c.number_input("Standardabweichung der Testwerte SD(X)", min_value=1.0, max_value=100.0, value=15.0, step=1.0, key="rel_ci_sd")
+    reliability = st.slider("Reliabilität für den ausgewählten Test", 0.0, 1.0, 0.80, 0.01, key="rel_ci_r")
+    coverage = st.selectbox("Intervallniveau", [90, 95, 99], index=1, key="rel_ci_level")
+    z = NormalDist().inv_cdf(0.5+coverage/200)
+    sem, see, kelley, classic, regression = score_intervals(score,reliability,mean_score,sd,z)
+    metric_row([("Standardmessfehler", f"{sem:.2f}"), ("Standardschätzfehler", f"{see:.2f}"), ("Kelley-Schätzung des wahren Werts", f"{kelley:.2f}")])
+    st.dataframe(pd.DataFrame({"Verfahren": ["Standardmessfehler", "Standardschätzfehler (Kelley)"],
+        "Intervallzentrum": [score,kelley], "Untere Grenze": [classic[0],regression[0]], "Obere Grenze": [classic[1],regression[1]]}), hide_index=True)
+    st.latex(r"SEM=SD(X)\sqrt{1-Rel(X)},\qquad I_{\mathrm{Mess}}=X\pm z\cdot SEM")
+    st.latex(r"\hat T=M+Rel(X)(X-M),\quad SEE=SD(X)\sqrt{Rel(X)(1-Rel(X))},\quad I_{\mathrm{Schätz}}=\hat T\pm z\cdot SEE")
+    st.caption(f"Zweiseitiges {coverage}%-Niveau: z = {z:.3f}. M und SD(X) stammen aus derselben relevanten Bezugsgruppe wie die Reliabilität. Die Unsicherheit dieser drei Kennwerte selbst wird hier nicht zusätzlich berücksichtigt.")
+    comparison = st.multiselect("Weitere Reliabilitäten zum Vergleich", [0.0,0.20,0.40,0.60,0.80,0.90,0.95,1.0], default=[0.60,0.90], key="rel_ci_compare")
+    rs = sorted(set(comparison+[reliability]))
+    show_cut = st.checkbox("Entscheidungsgrenze einblenden", key="rel_ci_showcut")
+    cutoff = st.number_input("Entscheidungsgrenze", value=110.0, step=1.0, key="rel_ci_cutoff") if show_cut else None
+    first, second = st.tabs(["Verschiedene Reliabilitäten", "Verschiedene Testwerte"])
+    with first:
+        fig = go.Figure()
+        rows = [score_intervals(score,r,mean_score,sd,z) for r in rs]
+        for label, color, centers, errors, offset in [
+            ("Messfehlerintervall um X", "#2878b5", [score]*len(rs), [z*v[0] for v in rows],0.13),
+            ("Schätzfehlerintervall um Kelley-Schätzung", "#d97706", [v[2] for v in rows], [z*v[1] for v in rows],-0.13)]:
+            fig.add_trace(go.Scatter(x=centers, y=np.arange(len(rs))+offset, mode="markers", name=label,
+                marker=dict(size=11,color=color),error_x=dict(type="data",array=errors,color=color,thickness=3),
+                hovertemplate="Intervallzentrum: %{x:.2f}<extra>"+label+"</extra>"))
+        fig.add_vline(x=mean_score,line_dash="dot",annotation_text="Gruppenmittel M")
+        fig.add_vline(x=score,line_dash="dash",annotation_text="Testwert X",annotation_position="bottom right")
+        if cutoff is not None:
+            fig.add_vline(x=cutoff,line_color="#8b1e3f",line_dash="dashdot",annotation_text="Entscheidungsgrenze")
+        bounds=[v for row in rows for pair in row[3:] for v in pair]+[score,mean_score]
+        if cutoff is not None:
+            bounds.append(cutoff)
+        fig.update_layout(height=max(350,len(rs)*85), xaxis=dict(title="Testwertskala",range=[min(bounds)-sd*.3,max(bounds)+sd*.3],fixedrange=True),
+            yaxis=dict(title="Reliabilität",tickvals=list(range(len(rs))),ticktext=[f"{r:.2f}"+(" ← ausgewählt" if r==reliability else "") for r in rs],range=[-.5,len(rs)-.5],fixedrange=True),
+            legend=dict(orientation="h",y=1.2),dragmode=False)
+        st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
+        st.write("**Ausprobieren:** Verschieben Sie X weit über oder unter den Mittelwert. Bei kleiner Reliabilität wandert die Kelley-Schätzung stärker zum Gruppenmittel; das Messfehlerintervall bleibt um X zentriert.")
+    with second:
+        grid = np.linspace(mean_score-3*sd,mean_score+3*sd,101)
+        centers = mean_score+reliability*(grid-mean_score)
+        fig=go.Figure()
+        for center,width,color,fill,label in [(grid,z*sem,"#2878b5","rgba(40,120,181,.14)","Messfehlerintervall"),
+                                             (centers,z*see,"#d97706","rgba(217,119,6,.18)","Kelley-Intervall")]:
+            fig.add_trace(go.Scatter(x=grid,y=center-width,mode="lines",line=dict(width=0),showlegend=False,hoverinfo="skip"))
+            fig.add_trace(go.Scatter(x=grid,y=center+width,mode="lines",line=dict(width=0),fill="tonexty",fillcolor=fill,name=label+f" ({coverage}%)",hoverinfo="skip"))
+            fig.add_trace(go.Scatter(x=grid,y=center,mode="lines",line=dict(color=color),name=label+": Zentrum"))
+        fig.add_trace(go.Scatter(x=[score,score],y=[score,kelley],mode="markers",marker=dict(size=11,color=["#2878b5","#d97706"]),name="Aktueller Testwert"))
+        if cutoff is not None:
+            fig.add_hline(y=cutoff,line_dash="dashdot",line_color="#8b1e3f",annotation_text="Entscheidungsgrenze")
+        fig.update_layout(height=450,xaxis=dict(title="Beobachteter Testwert X",range=[min(grid[0],score-sd*.1),max(grid[-1],score+sd*.1)],fixedrange=True),
+            yaxis=dict(title="Schätzung und Intervall für den wahren Wert",fixedrange=True),legend=dict(orientation="h",y=1.28),margin=dict(t=100),dragmode=False)
+        st.plotly_chart(fig,use_container_width=True,config={"displayModeBar":False})
+        st.caption("Bei gleicher Reliabilität und Standardabweichung bleiben die Intervallbreiten über X konstant: Das Beispiel verwendet konstante Fehlervarianzen. Testwertabhängige Messfehler, etwa aus IRT-Modellen, werden hier nicht modelliert.")
+    st.info("Zwei unterschiedliche Aussagen: Das klassische Intervall X ± z·SEM ist bei normalverteilten, konstanten Messfehlern ein Konfidenzintervall für einen festen wahren Wert. Das Kelley-Intervall beschreibt unter einem passenden normalverteilten Populationsmodell die bedingte Verteilung wahrer Werte bei gegebenem X. Es hat nicht automatisch dieselbe Überdeckung für jede einzelne Person. Deshalb bedeutet ein schmaleres Kelley-Intervall nicht allgemein eine überlegene Diagnose.")
+    if reliability < .10:
+        st.warning("Bei Reliabilität nahe 0 wird die Kelley-Schätzung fast vollständig vom Gruppenmittel bestimmt. Bei exakt 0 enthält das angenommene Modell keine Unterschiede in den wahren Werten; das Kelley-Intervall schrumpft deshalb auf M. Das ist eine Konsequenz dieses Modells, kein Beleg für präzise individuelle Messung.")
+    if show_cut:
+        st.write("Die Grenze dient dem Vergleich: Reicht ein Intervall über die Grenze, ist eine harte Zuordnung besonders unsicher. Auch ein vollständig auf einer Seite liegendes Intervall garantiert keine fehlerfreie Entscheidung. Welche zusätzlichen Informationen nötig sind, hängt von den Folgen falsch positiver und falsch negativer Entscheidungen ab.")
+    st.markdown("Methodischer Hintergrund: [Bias and precision in true-score estimation](https://doi.org/10.1111/bmsp.70058).")
+
+
 def module_reliability():
     version_badge()
     st.title("6 · Reliabilitätsschätzung")
     st.caption("Vom Verlängern eines Tests über Itemzusammenhänge bis zur modellbasierten Schätzung. Wir betrachten jeweils die Reliabilität eines ungewichteten Summenscores.")
-    section = st.radio("Lernschritt", ["6A · Spearman–Brown", "6B · Itemkorrelationen und Alpha", "6C · Alpha versus Omega"], horizontal=True, key="rel_section")
+    section = st.radio("Lernschritt", ["6A · Spearman–Brown", "6B · Itemkorrelationen und Alpha", "6C · Alpha versus Omega", "6D · Testwerte und Intervalle"], horizontal=True, key="rel_section")
     if section.startswith("6A"):
         reliability_length()
     elif section.startswith("6B"):
         reliability_correlations()
-    else:
+    elif section.startswith("6C"):
         reliability_alpha_omega()
+    else:
+        reliability_intervals()
     with st.expander("Einordnen und weiterlesen"):
         st.write("Interne Konsistenz ist keine Prüfung der zeitlichen Stabilität. Für Retest- und Paralleltestschätzungen braucht man entsprechende zusätzliche Messungen. Reliabilität hängt auch von der untersuchten Personengruppe ab. Ein hoher Wert allein beantwortet weder die Validitätsfrage noch die Frage nach den Folgen von Fehlentscheidungen.")
         st.markdown("Flora, D. B. (2020). *Your coefficient alpha is probably wrong, but which coefficient omega is right?* https://doi.org/10.1177/2515245920951747")
