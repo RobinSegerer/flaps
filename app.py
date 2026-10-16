@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.6.4"
+APP_VERSION = "1.6.5"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2126,12 +2126,12 @@ def module6():
                 "Etwa 80 % der Personen lösen das Item richtig; das Item ist relativ leicht."
             ),
             (
-                "Was ist bei vielen leichten Items zu erwarten, wenn die zugrunde liegende Trennschärfe gleich bleibt?",
-                "Die Testwerte verschieben sich nach oben; Deckeneffekte werden wahrscheinlicher. Gleichzeitig ist bei sehr leichten Items der mögliche beobachtete Zusammenhang mit dem Gesamttest stärker begrenzt."
+                "Was bedeutet es für die Testwerte, wenn die Items für die untersuchte Gruppe überwiegend leicht sind?",
+                "Viele Personen lösen viele Items richtig; die Testwerte liegen daher eher hoch. Wenn viele Personen die Höchstpunktzahl erreichen, kann der Test Unterschiede zwischen diesen Personen nicht mehr abbilden (Deckeneffekt)."
             ),
             (
                 "Warum reicht die Itemschwierigkeit allein nicht aus, um die Qualität eines Items zu beurteilen?",
-                "Weil zusätzlich wichtig ist, wie gut das Item zwischen Personen mit niedriger und hoher Testleistung unterscheidet – also seine Trennschärfe."
+                "Zusätzlich sind die Trennschärfe, der Inhalt und der Testzweck wichtig. Ein leichtes oder schweres Item ist nicht allein wegen seiner Schwierigkeit ungeeignet."
             ),
         ])
 
@@ -2371,8 +2371,8 @@ def module6():
                     use_container_width=True, hide_index=True
                 )
                 st.caption(
-                    "Vergleichen Sie leichte, mittlere und schwere Items. Sehr leichte oder sehr schwere Items können "
-                    "trotz guter Unterscheidung zwischen Personen eine niedrigere beobachtete Trennschärfe zeigen."
+                    "Vergleichen Sie Schwierigkeit und Trennschärfe der Items. Die Schwierigkeit beschreibt, "
+                    "wie häufig ein Item gelöst wird; die Trennschärfe beschreibt seinen Zusammenhang mit dem Testwert."
                 )
                 with st.expander("Vertiefung: technische Simulationswerte"):
                     tech_c = grouped[["Schwierigkeit", "Trennschärfe-Kategorie", "Erwarteter_Zusammenhang", "Theoretisches_Maximum"]].rename(
@@ -2415,14 +2415,16 @@ def module6():
             st.write(
                 "1. Bauen Sie einen Test mit starkem Deckeneffekt. "
                 "2. Bauen Sie einen Test mit starkem Bodeneffekt. "
-                "3. Bauen Sie einen Test mit möglichst breiter Schwierigkeit und überwiegend hoher Trennschärfe. "
-                "Vergleichen Sie jeweils Testwertverteilung, beobachtete Trennschärfen und Reliabilität."
+                "3. Bauen Sie einen Test aus leichten und schweren Items und vergleichen Sie ihn mit einem Test aus mittleren Items. "
+                "Vergleichen Sie jeweils Testwertverteilung, Trennschärfen und Reliabilität. "
+                "Diskutieren Sie: In welchen Leistungsbereichen soll der Test Unterschiede erfassen? "
+                "Die Gesamtreliabilität allein zeigt nicht, wie präzise er in einzelnen Bereichen misst."
             )
 
         st.info(
-            "**Merksatz:** Schwierigkeit und beobachtete klassische Trennschärfe sind nicht völlig unabhängig. "
-            "Bei sehr leichten oder sehr schweren Items antworten fast alle Personen gleich. "
-            "Dadurch ist weniger Variation vorhanden und der mögliche Zusammenhang des Items mit Fähigkeit bzw. Gesamttest stärker begrenzt."
+            "**Merksatz:** Die Schwierigkeit allein bestimmt nicht die Qualität eines Items. "
+            "Entscheidend sind auch seine Trennschärfe, sein Inhalt und der Testzweck. "
+            "Ein Test soll besonders in den Leistungsbereichen gut unterscheiden, die für seine Verwendung wichtig sind."
         )
 
         st.caption(
@@ -2432,26 +2434,27 @@ def module6():
         )
 
         if st.session_state.show_formula:
-            st.markdown("**Warum begrenzt die Schwierigkeit den möglichen Zusammenhang?**")
+            st.markdown("**Schwierigkeit, Itemvarianz und Trennschärfe**")
             st.latex(r"Var(X_i)=p_i(1-p_i)")
-            st.latex(r"Corr(\theta,X_i)=\rho_i\,\frac{\phi(c_i)}{\sqrt{p_i(1-p_i)}}")
+            st.latex(r"r_{i,Y}=\frac{Cov(X_i,Y)}{SD(X_i)\,SD(Y)}")
             st.caption(
-                "ρ beschreibt hier die zugrunde liegende Trennschärfe. "
-                "Der zweite Faktor hängt nur von der Schwierigkeit ab und ist bei p=.50 am größten."
+                "Bei dichotomen Items ist die Itemvarianz durch p bestimmt (hier als Anteil zwischen 0 und 1). "
+                "Die Trennschärfe lässt sich daraus allein nicht berechnen: Sie hängt auch vom Zusammenhang mit dem Testwert Y ab. "
+                "Bei der Part-Whole-Korrektur wird Y durch den Testwert ohne das betreffende Item ersetzt."
             )
 
         exam_questions("m6c", [
             (
-                "Warum sollte ein Test nicht nur aus sehr leichten oder sehr schweren Items bestehen?",
-                "Weil dann viele Personen ähnliche sehr hohe oder sehr niedrige Testwerte erhalten und der Test nur begrenzt differenziert."
+                "Warum sollten die Itemschwierigkeiten zum Ziel eines Tests passen?",
+                "Ein Test soll besonders dort gut zwischen Personen unterscheiden, wo Unterschiede für seine Verwendung wichtig sind. Interessieren vor allem der untere und obere Leistungsbereich, kann eine Kombination leichter und schwerer Items sinnvoll sein. Ob der Test dort präzise misst, muss zusätzlich geprüft werden."
             ),
             (
-                "Warum kann ein sehr leichtes oder sehr schweres Item trotz guter Trennschärfe eine niedrigere beobachtete Trennschärfe haben?",
-                "Weil bei extremen Schwierigkeiten nur wenig Itemvarianz vorhanden ist. Dadurch ist die beobachtbare Item-Test-Korrelation mathematisch stärker begrenzt."
+                "Kann man allein aus der Schwierigkeit eines Items auf seine Trennschärfe schließen?",
+                "Nein. Die Schwierigkeit gibt an, wie häufig ein Item gelöst wird. Die Trennschärfe beschreibt, wie die Antworten auf das Item mit dem Testwert zusammenhängen. Aus der Lösungshäufigkeit allein geht nicht hervor, welche Personen das Item lösen."
             ),
             (
                 "Reicht eine hohe Reliabilität allein aus, um einen guten Test zu kennzeichnen?",
-                "Nein. Ein Test kann hoch reliabel sein und trotzdem einen engen Schwierigkeitsbereich abdecken oder inhaltlich ungeeignet sein."
+                "Nein. Der Test muss auch das beabsichtigte Merkmal erfassen und für seinen Zweck geeignet sein. Eine hohe Gesamtreliabilität garantiert zudem nicht, dass er in jedem Leistungsbereich gleich präzise misst."
             ),
         ])
 
