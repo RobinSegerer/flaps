@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.7.0"
+APP_VERSION = "1.7.1"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2647,46 +2647,96 @@ def module_reliability():
         st.write("Interne Konsistenz ist keine Prüfung der zeitlichen Stabilität. Für Retest- und Paralleltestschätzungen braucht man entsprechende zusätzliche Messungen. Reliabilität hängt auch von der untersuchten Personengruppe ab. Ein hoher Wert allein beantwortet weder die Validitätsfrage noch die Frage nach den Folgen von Fehlentscheidungen.")
 
 
-def validity_population(paths, residual_link):
-    """Standardized Gaussian star model, with two within-time residual pairs."""
-    b = np.asarray(paths, dtype=float)
-    residual = np.diag(1 - b*b)
-    for i, j in [(0, 1), (2, 3)]:
-        residual[i, j] = residual[j, i] = residual_link * np.sqrt(residual[i, i]*residual[j, j])
-    sigma = np.eye(5)
-    sigma[0, 1:] = sigma[1:, 0] = b
-    sigma[1:, 1:] = np.outer(b, b) + residual
-    return sigma
+def validity_population(paths, residual_link, autoregression=(0.0, 0.0)):
+    """Five standardized observed variables in a recursive two-wave model."""
+    b = np.zeros((5, 5))
+    b[1:, 0] = paths
+    b[3, 1], b[4, 2] = autoregression
+    variances = np.ones(5)
+    variances[1:3] = 1 - np.asarray(paths[:2])**2
+    for j, previous, ar in [(3, 1, autoregression[0]), (4, 2, autoregression[1])]:
+        direct = paths[j-1]
+        variances[j] = 1 - (direct**2 + ar**2 + 2*direct*ar*paths[previous-1])
+    if min(variances) <= 0:
+        raise ValueError("Die Pfade lassen keine positive Restvarianz zu.")
+    psi = np.diag(variances)
+    for i, j in [(1, 2), (3, 4)]:
+        psi[i, j] = psi[j, i] = residual_link*np.sqrt(variances[i]*variances[j])
+    inv = np.linalg.inv(np.eye(5)-b)
+    return inv @ psi @ inv.T
 
 
-def validity_fit(data, paired=False):
-    """Exact normal-theory ML for common-predictor regressions with block residuals.
-
-    All four slopes free; residual covariance diagonal or two 2x2 blocks.
-    ML covariance uses divisor N; likelihood-ratio statistic is N * F_ML.
-    """
+def validity_fit(data, paired=False, autoregressive=False):
+    """Normal-theory ML; positive definite residual blocks by construction."""
+    from scipy.optimize import minimize
     from scipy.stats import chi2
     s = np.cov(data, rowvar=False, bias=True)
     n = len(data)
-    b = s[1:, 0] / s[0, 0]
-    residual = s[1:, 1:] - np.outer(b, b)*s[0, 0]
-    psi = np.diag(np.diag(residual))
+    edges = [(i, 0) for i in range(1, 5)]
+    if autoregressive:
+        edges += [(3, 1), (4, 2)]
+    k = len(edges)
+    start_b = np.zeros((5, 5))
+    for target in range(1, 5):
+        predictors = [j for i, j in edges if i == target]
+        start_b[target, predictors] = np.linalg.solve(s[np.ix_(predictors, predictors)], s[predictors, target])
+    initial_residual = (np.eye(5)-start_b) @ s @ (np.eye(5)-start_b).T
+    start = [start_b[i, j] for i, j in edges] + list(.5*np.log(np.diag(initial_residual)))
     if paired:
-        for i, j in [(0, 1), (2, 3)]:
-            psi[i, j] = psi[j, i] = residual[i, j]
-    sigma = s.copy()
-    sigma[1:, 1:] = np.outer(b, b)*s[0, 0] + psi
+        for i, j in [(1, 2), (3, 4)]:
+            r = initial_residual[i, j]/np.sqrt(initial_residual[i, i]*initial_residual[j, j])
+            start.append(np.arctanh(np.clip(r, -.95, .95)))
+    def implied(parameters):
+        b = np.zeros((5, 5))
+        for value, (i, j) in zip(parameters[:k], edges):
+            b[i, j] = value
+        sd = np.exp(parameters[k:k+5])
+        psi = np.diag(sd**2)
+        if paired:
+            for z, (i, j) in zip(parameters[k+5:], [(1, 2), (3, 4)]):
+                psi[i, j] = psi[j, i] = np.tanh(z)*sd[i]*sd[j]
+        inv = np.linalg.inv(np.eye(5)-b)
+        return inv @ psi @ inv.T, b
+    logdet_s = np.linalg.slogdet(s)[1]
     def discrepancy(model):
-        return max(0.0, np.linalg.slogdet(model)[1] + np.trace(np.linalg.solve(model, s))
-                   - np.linalg.slogdet(s)[1] - 5)
-    stat = n * discrepancy(sigma)
-    baseline = n * discrepancy(np.diag(np.diag(s)))
-    df = 4 if paired else 6  # 15 moments minus 11 or 9 free parameters
-    excess = max(stat - df, 0.0)
-    base_excess = baseline - 10
-    cfi = 1 - excess / max(excess, base_excess) if base_excess > 1e-10 else np.nan
-    tli = (baseline/10 - stat/df)/(baseline/10 - 1) if base_excess > 1e-10 else np.nan
-    return dict(sigma=sigma, beta=b*np.sqrt(s[0, 0]/np.diag(s)[1:]),
+        return np.linalg.slogdet(model)[1]+np.trace(np.linalg.solve(model, s))-logdet_s-5
+    def objective(parameters):
+        b = np.zeros((5, 5))
+        for value, (i, j) in zip(parameters[:k], edges):
+            b[i, j] = value
+        sd = np.exp(parameters[k:k+5])
+        psi = np.diag(sd**2)
+        if paired:
+            for z, (i, j) in zip(parameters[k+5:], [(1, 2), (3, 4)]):
+                psi[i, j] = psi[j, i] = np.tanh(z)*sd[i]*sd[j]
+        a = np.eye(5)-b
+        residual = a@s@a.T
+        precision = np.linalg.inv(psi)
+        value = np.linalg.slogdet(psi)[1]+np.trace(precision@residual)-logdet_s-5
+        grad_b = -2*precision@a@s
+        grad_psi = precision-precision@residual@precision
+        gradient = [grad_b[i, j] for i, j in edges]
+        gradient += list(2*np.sum(grad_psi*psi, axis=1))
+        if paired:
+            gradient += [2*grad_psi[i, j]*sd[i]*sd[j]*(1-np.tanh(z)**2)
+                         for z, (i, j) in zip(parameters[k+5:], [(1, 2), (3, 4)])]
+        return value, np.asarray(gradient)
+    fit = minimize(objective, start, jac=True, method="L-BFGS-B",
+                   bounds=[(-5, 5)]*k+[(-7, 5)]*5+([(-4, 4)]*2 if paired else []),
+                   options=dict(ftol=1e-12, gtol=1e-7, maxiter=1000))
+    if not fit.success or not np.isfinite(fit.fun):
+        raise RuntimeError("Die Schätzung ist nicht konvergiert. Bitte eine neue Stichprobe ziehen.")
+    sigma, b = implied(fit.x)
+    sd = np.sqrt(np.diag(sigma))
+    std_b = b*sd[None, :]/sd[:, None]
+    stat = max(0., n*discrepancy(sigma))
+    baseline = max(0., n*discrepancy(np.diag(np.diag(s))))
+    df = 15-len(start)
+    excess = max(stat-df, 0.)
+    base_excess = baseline-10
+    cfi = 1-excess/max(excess, base_excess) if base_excess > 1e-10 else np.nan
+    tli = (baseline/10-stat/df)/(baseline/10-1) if base_excess > 1e-10 else np.nan
+    return dict(sigma=sigma, beta=std_b[1:, 0], ar=std_b[[3, 4], [1, 2]],
                 chi2=stat, df=df, p=chi2.sf(stat, df),
                 RMSEA=np.sqrt(excess/(df*(n-1))), CFI=cfi, TLI=tli)
 
@@ -2694,16 +2744,23 @@ def validity_fit(data, paired=False):
 def module_validity():
     version_badge()
     st.title("7 · Validität")
-    st.write("Passt das Muster der Zusammenhänge zu dem, was unser Test erfassen soll? Wir vergleichen einen Ausgangstest mit vier Kriterien: zwei gleichzeitig und zwei später erhobenen Variablen.")
+    st.write("Wir entwickeln einen Lernkompetenztest: Hohe Werte sollen für erfolgreiches, selbstständiges Lernen stehen. Zur Validierung erheben wir Schulleistung (hohe Werte = gute Leistung) und Prüfungsangst (hohe Werte = starke Angst), jeweils zu Schuljahresbeginn (T1) und sechs Monate später (T2).")
     st.info("Hier bedeutet positiv bzw. negativ die erwartete Richtung des Zusammenhangs – nicht gute bzw. schlechte Validität. Auch ein negativer Zusammenhang kann die Interpretation eines Tests stützen. Für ein theoretisch unabhängiges Merkmal kann ein Zusammenhang nahe null erwartet werden.")
-    names = ["Ausgangstest", "Simultan +", "Simultan −", "Prospektiv +", "Prospektiv −"]
+    names = ["Lernkompetenz T1", "Schulleistung T1", "Prüfungsangst T1", "Schulleistung T2", "Prüfungsangst T2"]
     st.markdown("#### 1 · Zusammenhänge simulieren")
-    st.caption("Beispiel: Ein Kompetenztest hängt positiv mit Leistung und negativ mit Schwierigkeiten zusammen, jeweils gleichzeitig und später erhoben. Die Regler bestimmen die Zusammenhänge in der simulierten Population.")
+    st.caption("Unsere Hypothese: Lernkompetenz hängt positiv mit Schulleistung und negativ mit Prüfungsangst zusammen. Die Regler bestimmen standardisierte direkte Pfade in der simulierten Population. Mit zeitlicher Stabilität sind die direkten T2-Pfade nicht gleich den einfachen Korrelationen.")
     cols = st.columns(2)
     paths = []
-    for i, default in enumerate([0.6, -0.5, 0.4, -0.3]):
+    for i, default in enumerate([0.5, -0.4, 0.2, -0.15]):
         with cols[i//2]:
-            paths.append(st.slider(f"Ausgangstest → {names[i+1]}", -0.9, 0.9, default, 0.05, key=f"val_path_{i}"))
+            paths.append(st.slider(f"Lernkompetenz → {names[i+1]}", -0.5, 0.5, default, 0.05, key=f"val_direct_{i}"))
+    st.markdown("**Zeitliche Stabilität in den simulierten Daten**")
+    ar_cols = st.columns(2)
+    ar = []
+    for i, label in enumerate(["Schulleistung T1 → T2", "Prüfungsangst T1 → T2"]):
+        with ar_cols[i]:
+            ar.append(st.slider(label, 0.0, 0.6, 0.5, 0.05, key=f"val_ar_{i}"))
+    st.caption("0 bedeutet: kein autoregressiver Pfad in der Population. Ob diese Pfade bei der Auswertung berücksichtigt werden, entscheiden Sie unten – die Daten bleiben dabei gleich.")
     n = st.select_slider("Anzahl Personen", options=[100, 200, 500, 1000, 2000], value=500, key="val_n")
     with st.expander("Zusätzliche Gemeinsamkeiten der Kriterien"):
         residual_link = st.slider("Zusammenhang der Restanteile innerhalb desselben Erhebungszeitpunkts", -0.8, 0.8, 0.0, 0.1, key="val_residual")
@@ -2712,7 +2769,7 @@ def module_validity():
         st.session_state.val_seed = 42
     if st.button("Neue Stichprobe ziehen", key="val_resample"):
         st.session_state.val_seed += 1
-    population = validity_population(paths, residual_link)
+    population = validity_population(paths, residual_link, ar)
     noise = np.random.default_rng(st.session_state.val_seed).normal(size=(n, 5))
     data = noise @ np.linalg.cholesky(population).T
     observed = np.corrcoef(data, rowvar=False)
@@ -2724,26 +2781,48 @@ def module_validity():
     st.plotly_chart(fig, use_container_width=True)
     st.caption("Korrelationen der gezogenen Stichprobe. Bei unveränderten Einstellungen bleibt die Stichprobe gleich; die Regler lösen keine neue Zufallsziehung aus.")
     st.markdown("#### 3 · Pfadmodell schätzen")
+    autoregressive = st.checkbox("Autoregressive Pfade berücksichtigen (jeweils T1 → T2)", value=True, key="val_fit_ar")
     paired = st.checkbox("Zusätzliche Zusammenhänge innerhalb beider Kriterienpaare im Modell zulassen", key="val_paired")
-    result = validity_fit(data, paired)
-    # Native Plotly diagram: four directed paths, freely estimated standardized coefficients.
+    try:
+        result = validity_fit(data, paired, autoregressive)
+    except RuntimeError as error:
+        st.error(str(error))
+        return
     diagram = go.Figure()
-    positions = [(1, 3), (1, 2), (1, 1), (1, 0)]
-    diagram.add_trace(go.Scatter(x=[0]+[1]*4, y=[1.5, 3, 2, 1, 0], mode="markers+text",
-                                marker=dict(size=24, color=["#2574a9"]+["#e79b45"]*4),
+    # Same horizontal level = same measurement occasion; time runs downward.
+    positions = [(0, 1), (-1.5, 1), (1.5, 1), (-1.5, 0), (1.5, 0)]
+    diagram.add_trace(go.Scatter(x=[p[0] for p in positions], y=[p[1] for p in positions],
+                                mode="markers+text", marker=dict(size=26, color=["#2574a9"]+["#e79b45"]*4),
                                 text=names, textposition="top center", hoverinfo="skip"))
-    for i, (x, y) in enumerate(positions):
-        diagram.add_annotation(x=x-0.04, y=y, ax=0.04, ay=1.5, xref="x", yref="y", axref="x", ayref="y",
-                               showarrow=True, arrowhead=2, arrowwidth=2, arrowcolor="#78909c")
-        diagram.add_annotation(x=0.6, y=1.5+0.6*(y-1.5), text=f"β = {result['beta'][i]:.2f}", showarrow=False, bgcolor="white")
+    def arrow(source, target, value, color, label_x, label_y):
+        x0, y0 = positions[source]; x1, y1 = positions[target]
+        diagram.add_annotation(x=x1-.07*(x1-x0), y=y1-.07*(y1-y0),
+                               ax=x0+.07*(x1-x0), ay=y0+.07*(y1-y0),
+                               xref="x", yref="y", axref="x", ayref="y",
+                               showarrow=True, arrowhead=2, arrowwidth=2, arrowcolor=color)
+        diagram.add_annotation(x=label_x, y=label_y, text=f"β = {value:.2f}", showarrow=False, bgcolor="white", font=dict(color=color))
+    for i in range(4):
+        x1, y1 = positions[i+1]
+        arrow(0, i+1, result['beta'][i], "#2574a9", x1*.5, 1+(y1-1)*.5 + (.07 if i<2 else 0))
+    if autoregressive:
+        for i, (source, target) in enumerate([(1, 3), (2, 4)]):
+            x = positions[source][0]
+            arrow(source, target, result['ar'][i], "#558b2f", x+(-.28 if x<0 else .28), .5)
     if paired:
-        for top, bottom in [(3, 2), (1, 0)]:
-            diagram.add_annotation(x=1.15, y=top, ax=1.15, ay=bottom, xref="x", yref="y", axref="x", ayref="y",
+        for y in [1.3, -.25]:
+            diagram.add_annotation(x=1.5, y=y, ax=-1.5, ay=y, xref="x", yref="y", axref="x", ayref="y",
                                    showarrow=True, arrowside="end+start", arrowhead=2, startarrowhead=2, arrowcolor="#bd7d31")
-    diagram.update_layout(height=380, showlegend=False, margin=dict(t=30,b=10),
-                          xaxis=dict(visible=False, range=[-0.35, 1.5]), yaxis=dict(visible=False, range=[-0.3, 3.5]))
+            diagram.add_annotation(x=0, y=y+.06, text="Restzusammenhang", showarrow=False, font=dict(color="#bd7d31"))
+    diagram.add_annotation(x=-2.15, y=1, text="T1", showarrow=False)
+    diagram.add_annotation(x=-2.15, y=0, text="T2<br>+ 6 Monate", showarrow=False)
+    diagram.update_layout(height=450, showlegend=False, margin=dict(t=20,b=20,l=10,r=10),
+                          xaxis=dict(visible=False, range=[-2.5, 2.25]), yaxis=dict(visible=False, range=[-.5, 1.55]))
     st.plotly_chart(diagram, use_container_width=True)
-    st.caption("Pfeile: geschätzte standardisierte Regressionskoeffizienten. Doppelpfeile, falls aktiviert: erlaubte Zusammenhänge der Restanteile. Alle vier Regressionspfade werden frei geschätzt. Die Pfeile sind keine Nachweise kausaler Wirkungen; simultane Messungen liefern auch keine zeitliche Reihenfolge.")
+    st.caption("Blau: Pfade vom Lernkompetenztest. Grün: zeitliche Stabilität desselben Kriteriums. Orange: zugelassene Zusammenhänge der Restanteile. Alle eingezeichneten Pfade werden geschätzt. Die horizontalen Pfeile bei T1 legen eine Regression fest, belegen aber keine zeitliche oder kausale Richtung.")
+    if autoregressive:
+        st.info("Die direkten Pfade zu T2 beantworten jetzt: Sagt der Lernkompetenztest spätere Leistung bzw. Angst zusätzlich zum jeweiligen Ausgangswert voraus? Eine kleinere direkte Vorhersage bedeutet nicht automatisch geringere Validität: Ein Teil des Zusammenhangs läuft über die bereits zu T1 vorhandenen Unterschiede.")
+    else:
+        st.info("Ohne autoregressive Pfade berücksichtigt das Modell die Ausgangswerte der Kriterien nicht. Damit beantwortet es eine andere Frage; es zeigt nicht den zusätzlichen Vorhersagebeitrag über diese Ausgangswerte hinaus.")
     metrics = st.columns(4)
     metrics[0].metric(f"χ² (df = {result['df']})", f"{result['chi2']:.2f}")
     for col, key in zip(metrics[1:], ["RMSEA", "CFI", "TLI"]):
@@ -2753,18 +2832,19 @@ def module_validity():
     if not np.isfinite(result['CFI']):
         st.warning("Das Vergleichsmodell ohne Zusammenhänge passt bereits sehr gut. CFI und TLI lassen sich dann nicht sinnvoll interpretieren.")
     with st.expander("Was prüft der Modellfit hier genau?"):
-        st.write("Das Grundmodell schätzt vier Pfade, die Varianz des Ausgangstests und vier Restvarianzen (9 Parameter, df = 6). Es setzt alle sechs Zusammenhänge zwischen den Restanteilen auf null. Die Erweiterung schätzt zusätzlich zwei Restkovarianzen (11 Parameter, df = 4). Ein Modell mit allen sechs freien Restkovarianzen wäre gesättigt (df = 0): Sein perfekter Fit wäre keine Prüfung.")
-        st.write("Da jeder Zielwert denselben einzigen Prädiktor hat, sind die standardisierten Pfade hier gleich den jeweiligen Korrelationen mit dem Ausgangstest. Der Fit prüft vor allem die Einschränkungen der Restkovarianzen. Er prüft nicht, ob die vier Pfade theoretisch die richtige Richtung oder ausreichende Stärke haben.")
+        st.write("Das Grundmodell hat 9 freie Parameter (df = 6). Zwei autoregressive Pfade ergänzen 2 Parameter; zwei Restkovarianzen ergänzen weitere 2. Je nach Auswahl bleiben 6, 4 oder 2 Freiheitsgrade. Zeitübergreifende Restkovarianzen und Kreuzpfade zwischen Leistung und Angst werden auf null gesetzt.")
+        st.write("Der Fit prüft, ob die Einschränkungen des gewählten Modells mit den Daten vereinbar sind. Er prüft nicht, ob die Pfade theoretisch die richtige Richtung oder ausreichende Stärke haben. Mit autoregressiven Pfaden sind die direkten T2-Koeffizienten um den jeweiligen T1-Wert bereinigt; sie dürfen nicht mit einfachen Korrelationen gleichgesetzt werden.")
         fitted = result['sigma'] / np.sqrt(np.outer(np.diag(result['sigma']), np.diag(result['sigma'])))
         st.write("Vom Modell vorhergesagte Korrelationsmatrix")
         st.dataframe(pd.DataFrame(fitted, index=names, columns=names).round(3), use_container_width=True)
         st.write("Abweichungen: Stichprobe minus Modell")
         st.dataframe(pd.DataFrame(observed-fitted, index=names, columns=names).round(3), use_container_width=True)
-        st.caption("Normalverteilte kontinuierliche Variablen, vollständige Daten, normaltheoretische Maximum-Likelihood-Schätzung. Dieses einfache Modell hat eine direkte Lösung ohne iterative Optimierung. χ² = N · FML bei einer Kovarianzmatrix mit Divisor N; RMSEA verwendet N−1. CFI wird auf 0–1 begrenzt, TLI nicht. Grundlage der Fitindizes: https://semopy.com/docs/stats.html")
+        st.caption("Normalverteilte kontinuierliche Variablen, vollständige Daten, normaltheoretische Maximum-Likelihood-Schätzung. Die Pfade und Varianzen werden gemeinsam numerisch geschätzt; die Konvergenz wird geprüft. χ² = N · FML bei einer Kovarianzmatrix mit Divisor N; RMSEA verwendet N−1. CFI wird auf 0–1 begrenzt, TLI nicht. Grundlage der Fitindizes: https://semopy.com/docs/stats.html")
     st.info("Validität betrifft die begründete Interpretation und Verwendung der Testwerte. Ein passendes Zusammenhangsmuster liefert dafür Evidenz. Ein guter Modellfit allein beweist weder Validität noch Kausalität. Für Vorhersagen bei neuen Personen ist zusätzlich eine Prüfung an unabhängigen Daten wichtig.")
     st.markdown("#### Ausprobieren")
-    st.write("1. Schwächen Sie die beiden prospektiven Zusammenhänge ab: Was ändert sich an der Vorhersagekraft, was am Modellfit?\n\n2. Erhöhen Sie die zusätzlichen Gemeinsamkeiten auf 0,6. Vergleichen Sie das Grundmodell mit der Erweiterung.\n\n3. Verändern Sie die Stichprobengröße und ziehen Sie neue Stichproben: Wie stabil sind Pfade und Fitwerte?")
+    st.write("1. Lassen Sie die zeitliche Stabilität bei 0,5 und schalten Sie die autoregressiven Pfade im Modell aus und ein. Wie verändern sich die direkten T2-Pfade und der Fit?\n\n2. Setzen Sie beide direkten T2-Pfade auf null: Kann der Lernkompetenztest trotzdem mit den späteren Kriterien korrelieren?\n\n3. Setzen Sie die zeitliche Stabilität auf null. Braucht das Modell dann noch autoregressive Pfade?")
     exam_questions("validity", [
+        ("Was zeigt der Pfad vom Lernkompetenztest zur späteren Schulleistung, wenn der autoregressive Pfad berücksichtigt wird?", "Er beschreibt den zusätzlichen Zusammenhang mit der späteren Leistung unter Berücksichtigung der bereits zu T1 gemessenen Leistung. Er ist kein Beweis für eine kausale Wirkung."),
         ("Bedeutet eine negative Korrelation, dass der Test nicht valide ist?", "Nein. Wenn die Theorie einen negativen Zusammenhang vorhersagt, kann dieser die Interpretation der Testwerte stützen."),
         ("Belegt ein guter Modellfit die Validität des Ausgangstests?", "Nein. Er zeigt, dass die Einschränkungen des Modells mit den Daten vereinbar sind. Zusätzlich müssen Richtung und Stärke der Zusammenhänge zur Theorie und zum Verwendungszweck passen."),
         ("Was unterscheidet simultane und prospektive Validierung?", "Bei simultaner Validierung werden Test und Kriterium gleichzeitig erhoben. Bei prospektiver Validierung wird das Kriterium später erhoben; damit lässt sich eine Vorhersage über die Zeit untersuchen.")
