@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.6.5"
+APP_VERSION = "1.7.0"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -363,6 +363,7 @@ def sidebar():
             "4 · Klassische Testtheorie",
             "5 · Itemanalyse",
             "6 · Reliabilitätsschätzung",
+            "7 · Validität",
         ],
         index=[
             "1 · Mittelwert & Varianz",
@@ -371,6 +372,7 @@ def sidebar():
             "4 · Klassische Testtheorie",
             "5 · Itemanalyse",
             "6 · Reliabilitätsschätzung",
+            "7 · Validität",
         ].index(
             st.session_state.module
             if st.session_state.module in [
@@ -380,6 +382,7 @@ def sidebar():
                 "4 · Klassische Testtheorie",
                 "5 · Itemanalyse",
                 "6 · Reliabilitätsschätzung",
+                "7 · Validität",
             ]
             else "2 · Zusammenhang zweier Variablen"
         )
@@ -2644,6 +2647,130 @@ def module_reliability():
         st.write("Interne Konsistenz ist keine Prüfung der zeitlichen Stabilität. Für Retest- und Paralleltestschätzungen braucht man entsprechende zusätzliche Messungen. Reliabilität hängt auch von der untersuchten Personengruppe ab. Ein hoher Wert allein beantwortet weder die Validitätsfrage noch die Frage nach den Folgen von Fehlentscheidungen.")
 
 
+def validity_population(paths, residual_link):
+    """Standardized Gaussian star model, with two within-time residual pairs."""
+    b = np.asarray(paths, dtype=float)
+    residual = np.diag(1 - b*b)
+    for i, j in [(0, 1), (2, 3)]:
+        residual[i, j] = residual[j, i] = residual_link * np.sqrt(residual[i, i]*residual[j, j])
+    sigma = np.eye(5)
+    sigma[0, 1:] = sigma[1:, 0] = b
+    sigma[1:, 1:] = np.outer(b, b) + residual
+    return sigma
+
+
+def validity_fit(data, paired=False):
+    """Exact normal-theory ML for common-predictor regressions with block residuals.
+
+    All four slopes free; residual covariance diagonal or two 2x2 blocks.
+    ML covariance uses divisor N; likelihood-ratio statistic is N * F_ML.
+    """
+    from scipy.stats import chi2
+    s = np.cov(data, rowvar=False, bias=True)
+    n = len(data)
+    b = s[1:, 0] / s[0, 0]
+    residual = s[1:, 1:] - np.outer(b, b)*s[0, 0]
+    psi = np.diag(np.diag(residual))
+    if paired:
+        for i, j in [(0, 1), (2, 3)]:
+            psi[i, j] = psi[j, i] = residual[i, j]
+    sigma = s.copy()
+    sigma[1:, 1:] = np.outer(b, b)*s[0, 0] + psi
+    def discrepancy(model):
+        return max(0.0, np.linalg.slogdet(model)[1] + np.trace(np.linalg.solve(model, s))
+                   - np.linalg.slogdet(s)[1] - 5)
+    stat = n * discrepancy(sigma)
+    baseline = n * discrepancy(np.diag(np.diag(s)))
+    df = 4 if paired else 6  # 15 moments minus 11 or 9 free parameters
+    excess = max(stat - df, 0.0)
+    base_excess = baseline - 10
+    cfi = 1 - excess / max(excess, base_excess) if base_excess > 1e-10 else np.nan
+    tli = (baseline/10 - stat/df)/(baseline/10 - 1) if base_excess > 1e-10 else np.nan
+    return dict(sigma=sigma, beta=b*np.sqrt(s[0, 0]/np.diag(s)[1:]),
+                chi2=stat, df=df, p=chi2.sf(stat, df),
+                RMSEA=np.sqrt(excess/(df*(n-1))), CFI=cfi, TLI=tli)
+
+
+def module_validity():
+    version_badge()
+    st.title("7 · Validität")
+    st.write("Passt das Muster der Zusammenhänge zu dem, was unser Test erfassen soll? Wir vergleichen einen Ausgangstest mit vier Kriterien: zwei gleichzeitig und zwei später erhobenen Variablen.")
+    st.info("Hier bedeutet positiv bzw. negativ die erwartete Richtung des Zusammenhangs – nicht gute bzw. schlechte Validität. Auch ein negativer Zusammenhang kann die Interpretation eines Tests stützen. Für ein theoretisch unabhängiges Merkmal kann ein Zusammenhang nahe null erwartet werden.")
+    names = ["Ausgangstest", "Simultan +", "Simultan −", "Prospektiv +", "Prospektiv −"]
+    st.markdown("#### 1 · Zusammenhänge simulieren")
+    st.caption("Beispiel: Ein Kompetenztest hängt positiv mit Leistung und negativ mit Schwierigkeiten zusammen, jeweils gleichzeitig und später erhoben. Die Regler bestimmen die Zusammenhänge in der simulierten Population.")
+    cols = st.columns(2)
+    paths = []
+    for i, default in enumerate([0.6, -0.5, 0.4, -0.3]):
+        with cols[i//2]:
+            paths.append(st.slider(f"Ausgangstest → {names[i+1]}", -0.9, 0.9, default, 0.05, key=f"val_path_{i}"))
+    n = st.select_slider("Anzahl Personen", options=[100, 200, 500, 1000, 2000], value=500, key="val_n")
+    with st.expander("Zusätzliche Gemeinsamkeiten der Kriterien"):
+        residual_link = st.slider("Zusammenhang der Restanteile innerhalb desselben Erhebungszeitpunkts", -0.8, 0.8, 0.0, 0.1, key="val_residual")
+        st.write("Diese Gemeinsamkeiten bestehen zusätzlich zum Zusammenhang mit dem Ausgangstest, etwa durch eine gemeinsame Erhebungsmethode. Derselbe Wert gilt für das simultane und das prospektive Kriterienpaar.")
+    if "val_seed" not in st.session_state:
+        st.session_state.val_seed = 42
+    if st.button("Neue Stichprobe ziehen", key="val_resample"):
+        st.session_state.val_seed += 1
+    population = validity_population(paths, residual_link)
+    noise = np.random.default_rng(st.session_state.val_seed).normal(size=(n, 5))
+    data = noise @ np.linalg.cholesky(population).T
+    observed = np.corrcoef(data, rowvar=False)
+    st.markdown("#### 2 · Korrelationsmatrix")
+    fig = go.Figure(go.Heatmap(z=observed, x=names, y=names, zmin=-1, zmax=1,
+                              colorscale="RdBu", reversescale=True, text=np.round(observed, 2),
+                              texttemplate="%{text:.2f}", colorbar=dict(title="r")))
+    fig.update_layout(height=400, margin=dict(t=20, b=20), yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("Korrelationen der gezogenen Stichprobe. Bei unveränderten Einstellungen bleibt die Stichprobe gleich; die Regler lösen keine neue Zufallsziehung aus.")
+    st.markdown("#### 3 · Pfadmodell schätzen")
+    paired = st.checkbox("Zusätzliche Zusammenhänge innerhalb beider Kriterienpaare im Modell zulassen", key="val_paired")
+    result = validity_fit(data, paired)
+    # Native Plotly diagram: four directed paths, freely estimated standardized coefficients.
+    diagram = go.Figure()
+    positions = [(1, 3), (1, 2), (1, 1), (1, 0)]
+    diagram.add_trace(go.Scatter(x=[0]+[1]*4, y=[1.5, 3, 2, 1, 0], mode="markers+text",
+                                marker=dict(size=24, color=["#2574a9"]+["#e79b45"]*4),
+                                text=names, textposition="top center", hoverinfo="skip"))
+    for i, (x, y) in enumerate(positions):
+        diagram.add_annotation(x=x-0.04, y=y, ax=0.04, ay=1.5, xref="x", yref="y", axref="x", ayref="y",
+                               showarrow=True, arrowhead=2, arrowwidth=2, arrowcolor="#78909c")
+        diagram.add_annotation(x=0.6, y=1.5+0.6*(y-1.5), text=f"β = {result['beta'][i]:.2f}", showarrow=False, bgcolor="white")
+    if paired:
+        for top, bottom in [(3, 2), (1, 0)]:
+            diagram.add_annotation(x=1.15, y=top, ax=1.15, ay=bottom, xref="x", yref="y", axref="x", ayref="y",
+                                   showarrow=True, arrowside="end+start", arrowhead=2, startarrowhead=2, arrowcolor="#bd7d31")
+    diagram.update_layout(height=380, showlegend=False, margin=dict(t=30,b=10),
+                          xaxis=dict(visible=False, range=[-0.35, 1.5]), yaxis=dict(visible=False, range=[-0.3, 3.5]))
+    st.plotly_chart(diagram, use_container_width=True)
+    st.caption("Pfeile: geschätzte standardisierte Regressionskoeffizienten. Doppelpfeile, falls aktiviert: erlaubte Zusammenhänge der Restanteile. Alle vier Regressionspfade werden frei geschätzt. Die Pfeile sind keine Nachweise kausaler Wirkungen; simultane Messungen liefern auch keine zeitliche Reihenfolge.")
+    metrics = st.columns(4)
+    metrics[0].metric(f"χ² (df = {result['df']})", f"{result['chi2']:.2f}")
+    for col, key in zip(metrics[1:], ["RMSEA", "CFI", "TLI"]):
+        col.metric(key, f"{result[key]:.3f}" if np.isfinite(result[key]) else "nicht bestimmbar")
+    st.caption(f"χ²-Test: p = {result['p']:.4f}. Freiheitsgrade: 15 Varianzen/Kovarianzen minus {15-result['df']} freie Parameter.")
+    st.write("χ² prüft die exakte Modellpassung und reagiert auch auf die Stichprobengröße. Ein kleinerer RMSEA spricht für weniger Fehlanpassung pro Freiheitsgrad. CFI und TLI vergleichen das Modell mit einem Modell ohne Zusammenhänge; Werte nahe 1 sprechen für eine bessere relative Passung. Bei wenigen Freiheitsgraden können die Indizes stark schwanken. Es gibt hier keine automatische Bewertung anhand starrer Grenzwerte.")
+    if not np.isfinite(result['CFI']):
+        st.warning("Das Vergleichsmodell ohne Zusammenhänge passt bereits sehr gut. CFI und TLI lassen sich dann nicht sinnvoll interpretieren.")
+    with st.expander("Was prüft der Modellfit hier genau?"):
+        st.write("Das Grundmodell schätzt vier Pfade, die Varianz des Ausgangstests und vier Restvarianzen (9 Parameter, df = 6). Es setzt alle sechs Zusammenhänge zwischen den Restanteilen auf null. Die Erweiterung schätzt zusätzlich zwei Restkovarianzen (11 Parameter, df = 4). Ein Modell mit allen sechs freien Restkovarianzen wäre gesättigt (df = 0): Sein perfekter Fit wäre keine Prüfung.")
+        st.write("Da jeder Zielwert denselben einzigen Prädiktor hat, sind die standardisierten Pfade hier gleich den jeweiligen Korrelationen mit dem Ausgangstest. Der Fit prüft vor allem die Einschränkungen der Restkovarianzen. Er prüft nicht, ob die vier Pfade theoretisch die richtige Richtung oder ausreichende Stärke haben.")
+        fitted = result['sigma'] / np.sqrt(np.outer(np.diag(result['sigma']), np.diag(result['sigma'])))
+        st.write("Vom Modell vorhergesagte Korrelationsmatrix")
+        st.dataframe(pd.DataFrame(fitted, index=names, columns=names).round(3), use_container_width=True)
+        st.write("Abweichungen: Stichprobe minus Modell")
+        st.dataframe(pd.DataFrame(observed-fitted, index=names, columns=names).round(3), use_container_width=True)
+        st.caption("Normalverteilte kontinuierliche Variablen, vollständige Daten, normaltheoretische Maximum-Likelihood-Schätzung. Dieses einfache Modell hat eine direkte Lösung ohne iterative Optimierung. χ² = N · FML bei einer Kovarianzmatrix mit Divisor N; RMSEA verwendet N−1. CFI wird auf 0–1 begrenzt, TLI nicht. Grundlage der Fitindizes: https://semopy.com/docs/stats.html")
+    st.info("Validität betrifft die begründete Interpretation und Verwendung der Testwerte. Ein passendes Zusammenhangsmuster liefert dafür Evidenz. Ein guter Modellfit allein beweist weder Validität noch Kausalität. Für Vorhersagen bei neuen Personen ist zusätzlich eine Prüfung an unabhängigen Daten wichtig.")
+    st.markdown("#### Ausprobieren")
+    st.write("1. Schwächen Sie die beiden prospektiven Zusammenhänge ab: Was ändert sich an der Vorhersagekraft, was am Modellfit?\n\n2. Erhöhen Sie die zusätzlichen Gemeinsamkeiten auf 0,6. Vergleichen Sie das Grundmodell mit der Erweiterung.\n\n3. Verändern Sie die Stichprobengröße und ziehen Sie neue Stichproben: Wie stabil sind Pfade und Fitwerte?")
+    exam_questions("validity", [
+        ("Bedeutet eine negative Korrelation, dass der Test nicht valide ist?", "Nein. Wenn die Theorie einen negativen Zusammenhang vorhersagt, kann dieser die Interpretation der Testwerte stützen."),
+        ("Belegt ein guter Modellfit die Validität des Ausgangstests?", "Nein. Er zeigt, dass die Einschränkungen des Modells mit den Daten vereinbar sind. Zusätzlich müssen Richtung und Stärke der Zusammenhänge zur Theorie und zum Verwendungszweck passen."),
+        ("Was unterscheidet simultane und prospektive Validierung?", "Bei simultaner Validierung werden Test und Kriterium gleichzeitig erhoben. Bei prospektiver Validierung wird das Kriterium später erhoben; damit lässt sich eine Vorhersage über die Zeit untersuchen.")
+    ])
+
+
 # Router
 # -----------------------------
 module = st.session_state.module
@@ -2659,6 +2786,8 @@ elif module.startswith("5"):
     module6()
 elif module.startswith("6"):
     module_reliability()
+elif module.startswith("7"):
+    module_validity()
 
 st.divider()
 st.caption(
