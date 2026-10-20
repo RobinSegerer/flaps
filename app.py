@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.7.1"
+APP_VERSION = "1.7.2"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2647,16 +2647,19 @@ def module_reliability():
         st.write("Interne Konsistenz ist keine Prüfung der zeitlichen Stabilität. Für Retest- und Paralleltestschätzungen braucht man entsprechende zusätzliche Messungen. Reliabilität hängt auch von der untersuchten Personengruppe ab. Ein hoher Wert allein beantwortet weder die Validitätsfrage noch die Frage nach den Folgen von Fehlentscheidungen.")
 
 
-def validity_population(paths, residual_link, autoregression=(0.0, 0.0)):
+def validity_population(paths, residual_link, autoregression=(0.0, 0.0), crosslag=(0.0, 0.0)):
     """Five standardized observed variables in a recursive two-wave model."""
     b = np.zeros((5, 5))
     b[1:, 0] = paths
     b[3, 1], b[4, 2] = autoregression
+    b[4, 1], b[3, 2] = crosslag
     variances = np.ones(5)
     variances[1:3] = 1 - np.asarray(paths[:2])**2
-    for j, previous, ar in [(3, 1, autoregression[0]), (4, 2, autoregression[1])]:
-        direct = paths[j-1]
-        variances[j] = 1 - (direct**2 + ar**2 + 2*direct*ar*paths[previous-1])
+    t1 = np.eye(3)
+    t1[0, 1:] = t1[1:, 0] = paths[:2]
+    t1[1, 2] = t1[2, 1] = paths[0]*paths[1]+residual_link*np.sqrt(variances[1]*variances[2])
+    for j in [3, 4]:
+        variances[j] = 1 - b[j, :3] @ t1 @ b[j, :3]
     if min(variances) <= 0:
         raise ValueError("Die Pfade lassen keine positive Restvarianz zu.")
     psi = np.diag(variances)
@@ -2666,7 +2669,7 @@ def validity_population(paths, residual_link, autoregression=(0.0, 0.0)):
     return inv @ psi @ inv.T
 
 
-def validity_fit(data, paired=False, autoregressive=False):
+def validity_fit(data, paired=False, autoregressive=False, crosslagged=False):
     """Normal-theory ML; positive definite residual blocks by construction."""
     from scipy.optimize import minimize
     from scipy.stats import chi2
@@ -2675,6 +2678,8 @@ def validity_fit(data, paired=False, autoregressive=False):
     edges = [(i, 0) for i in range(1, 5)]
     if autoregressive:
         edges += [(3, 1), (4, 2)]
+    if crosslagged:
+        edges += [(4, 1), (3, 2)]
     k = len(edges)
     start_b = np.zeros((5, 5))
     for target in range(1, 5):
@@ -2732,12 +2737,17 @@ def validity_fit(data, paired=False, autoregressive=False):
     stat = max(0., n*discrepancy(sigma))
     baseline = max(0., n*discrepancy(np.diag(np.diag(s))))
     df = 15-len(start)
+    if df == 0:
+        # Saturated: no testable covariance restrictions; do not suggest fit evidence.
+        return dict(sigma=sigma, beta=std_b[1:, 0], ar=std_b[[3, 4], [1, 2]],
+                    cross=std_b[[4, 3], [1, 2]], chi2=stat, df=0,
+                    p=np.nan, RMSEA=np.nan, CFI=np.nan, TLI=np.nan)
     excess = max(stat-df, 0.)
     base_excess = baseline-10
     cfi = 1-excess/max(excess, base_excess) if base_excess > 1e-10 else np.nan
     tli = (baseline/10-stat/df)/(baseline/10-1) if base_excess > 1e-10 else np.nan
     return dict(sigma=sigma, beta=std_b[1:, 0], ar=std_b[[3, 4], [1, 2]],
-                chi2=stat, df=df, p=chi2.sf(stat, df),
+                cross=std_b[[4, 3], [1, 2]], chi2=stat, df=df, p=chi2.sf(stat, df),
                 RMSEA=np.sqrt(excess/(df*(n-1))), CFI=cfi, TLI=tli)
 
 
@@ -2761,6 +2771,12 @@ def module_validity():
         with ar_cols[i]:
             ar.append(st.slider(label, 0.0, 0.6, 0.5, 0.05, key=f"val_ar_{i}"))
     st.caption("0 bedeutet: kein autoregressiver Pfad in der Population. Ob diese Pfade bei der Auswertung berücksichtigt werden, entscheiden Sie unten – die Daten bleiben dabei gleich.")
+    with st.expander("Kreuzverzögerte Zusammenhänge in den simulierten Daten"):
+        cross = [
+            st.slider("Schulleistung T1 → Prüfungsangst T2", -0.4, 0.4, 0.0, 0.05, key="val_cross_0"),
+            st.slider("Prüfungsangst T1 → Schulleistung T2", -0.4, 0.4, 0.0, 0.05, key="val_cross_1"),
+        ]
+        st.caption("Diese Regler verändern die Daten. Der Schalter beim Pfadmodell entscheidet unabhängig davon, ob beide Kreuzpfade geschätzt werden.")
     n = st.select_slider("Anzahl Personen", options=[100, 200, 500, 1000, 2000], value=500, key="val_n")
     with st.expander("Zusätzliche Gemeinsamkeiten der Kriterien"):
         residual_link = st.slider("Zusammenhang der Restanteile innerhalb desselben Erhebungszeitpunkts", -0.8, 0.8, 0.0, 0.1, key="val_residual")
@@ -2769,7 +2785,11 @@ def module_validity():
         st.session_state.val_seed = 42
     if st.button("Neue Stichprobe ziehen", key="val_resample"):
         st.session_state.val_seed += 1
-    population = validity_population(paths, residual_link, ar)
+    try:
+        population = validity_population(paths, residual_link, ar, cross)
+    except ValueError:
+        st.warning("Diese Kombination standardisierter Pfade erklärt mindestens die gesamte Varianz eines T2-Kriteriums. Bitte einen direkten, autoregressiven oder kreuzverzögerten Pfad abschwächen, damit eine positive Restvarianz bleibt.")
+        return
     noise = np.random.default_rng(st.session_state.val_seed).normal(size=(n, 5))
     data = noise @ np.linalg.cholesky(population).T
     observed = np.corrcoef(data, rowvar=False)
@@ -2782,9 +2802,10 @@ def module_validity():
     st.caption("Korrelationen der gezogenen Stichprobe. Bei unveränderten Einstellungen bleibt die Stichprobe gleich; die Regler lösen keine neue Zufallsziehung aus.")
     st.markdown("#### 3 · Pfadmodell schätzen")
     autoregressive = st.checkbox("Autoregressive Pfade berücksichtigen (jeweils T1 → T2)", value=True, key="val_fit_ar")
+    crosslagged = st.checkbox("Kreuzverzögerte Pfade berücksichtigen (Schulleistung T1 → Angst T2 und Angst T1 → Schulleistung T2)", key="val_fit_cross")
     paired = st.checkbox("Zusätzliche Zusammenhänge innerhalb beider Kriterienpaare im Modell zulassen", key="val_paired")
     try:
-        result = validity_fit(data, paired, autoregressive)
+        result = validity_fit(data, paired, autoregressive, crosslagged)
     except RuntimeError as error:
         st.error(str(error))
         return
@@ -2808,6 +2829,9 @@ def module_validity():
         for i, (source, target) in enumerate([(1, 3), (2, 4)]):
             x = positions[source][0]
             arrow(source, target, result['ar'][i], "#558b2f", x+(-.28 if x<0 else .28), .5)
+    if crosslagged:
+        arrow(1, 4, result['cross'][0], "#8e44ad", -.6, .78)
+        arrow(2, 3, result['cross'][1], "#8e44ad", .6, .78)
     if paired:
         for y in [1.3, -.25]:
             diagram.add_annotation(x=1.5, y=y, ax=-1.5, ay=y, xref="x", yref="y", axref="x", ayref="y",
@@ -2818,22 +2842,29 @@ def module_validity():
     diagram.update_layout(height=450, showlegend=False, margin=dict(t=20,b=20,l=10,r=10),
                           xaxis=dict(visible=False, range=[-2.5, 2.25]), yaxis=dict(visible=False, range=[-.5, 1.55]))
     st.plotly_chart(diagram, use_container_width=True)
-    st.caption("Blau: Pfade vom Lernkompetenztest. Grün: zeitliche Stabilität desselben Kriteriums. Orange: zugelassene Zusammenhänge der Restanteile. Alle eingezeichneten Pfade werden geschätzt. Die horizontalen Pfeile bei T1 legen eine Regression fest, belegen aber keine zeitliche oder kausale Richtung.")
-    if autoregressive:
+    st.caption("Blau: Pfade vom Lernkompetenztest. Grün: zeitliche Stabilität desselben Kriteriums. Violett: kreuzverzögerte Pfade zwischen Leistung und Angst. Orange: zugelassene Zusammenhänge der Restanteile. Alle eingezeichneten Pfade werden geschätzt. Die horizontalen Pfeile bei T1 legen eine Regression fest, belegen aber keine zeitliche oder kausale Richtung.")
+    if autoregressive and crosslagged:
+        st.info("Die direkten T2-Pfade des Lernkompetenztests berücksichtigen jetzt beide Ausgangswerte: Schulleistung und Prüfungsangst zu T1. Die Kreuzpfade zeigen den zusätzlichen Zusammenhang des jeweils anderen T1-Kriteriums mit dem späteren Zielwert; sie belegen keine Kausalität.")
+    elif crosslagged:
+        st.info("Das Modell berücksichtigt für jeden T2-Zielwert das jeweils andere T1-Kriterium, aber nicht seinen eigenen Ausgangswert. Für einen Vergleich unter Kontrolle beider Ausgangswerte zusätzlich die autoregressiven Pfade aktivieren.")
+    elif autoregressive:
         st.info("Die direkten Pfade zu T2 beantworten jetzt: Sagt der Lernkompetenztest spätere Leistung bzw. Angst zusätzlich zum jeweiligen Ausgangswert voraus? Eine kleinere direkte Vorhersage bedeutet nicht automatisch geringere Validität: Ein Teil des Zusammenhangs läuft über die bereits zu T1 vorhandenen Unterschiede.")
     else:
         st.info("Ohne autoregressive Pfade berücksichtigt das Modell die Ausgangswerte der Kriterien nicht. Damit beantwortet es eine andere Frage; es zeigt nicht den zusätzlichen Vorhersagebeitrag über diese Ausgangswerte hinaus.")
     metrics = st.columns(4)
     metrics[0].metric(f"χ² (df = {result['df']})", f"{result['chi2']:.2f}")
     for col, key in zip(metrics[1:], ["RMSEA", "CFI", "TLI"]):
-        col.metric(key, f"{result[key]:.3f}" if np.isfinite(result[key]) else "nicht bestimmbar")
-    st.caption(f"χ²-Test: p = {result['p']:.4f}. Freiheitsgrade: 15 Varianzen/Kovarianzen minus {15-result['df']} freie Parameter.")
+        col.metric(key, f"{result[key]:.3f}" if np.isfinite(result[key]) else ("— (gesättigt)" if result["df"] == 0 else "nicht bestimmbar"))
+    if result['df'] == 0:
+        st.warning("Gesättigtes Modell: 15 freie Parameter für 15 Varianzen/Kovarianzen (df = 0). Es reproduziert die Stichprobenmatrix vollständig. χ² ≈ 0 ist daher zwangsläufig und kein Beleg für Validität oder ein zutreffendes Modell. Ein χ²-Test ist nicht möglich; RMSEA, CFI und TLI werden hier nicht als Fitbewertung ausgegeben. Die Pfadschätzungen bleiben interpretierbar unter den Modellannahmen.")
+    else:
+        st.caption(f"χ²-Test: p = {result['p']:.4f}. Freiheitsgrade: 15 Varianzen/Kovarianzen minus {15-result['df']} freie Parameter.")
     st.write("χ² prüft die exakte Modellpassung und reagiert auch auf die Stichprobengröße. Ein kleinerer RMSEA spricht für weniger Fehlanpassung pro Freiheitsgrad. CFI und TLI vergleichen das Modell mit einem Modell ohne Zusammenhänge; Werte nahe 1 sprechen für eine bessere relative Passung. Bei wenigen Freiheitsgraden können die Indizes stark schwanken. Es gibt hier keine automatische Bewertung anhand starrer Grenzwerte.")
-    if not np.isfinite(result['CFI']):
+    if result['df'] > 0 and not np.isfinite(result['CFI']):
         st.warning("Das Vergleichsmodell ohne Zusammenhänge passt bereits sehr gut. CFI und TLI lassen sich dann nicht sinnvoll interpretieren.")
     with st.expander("Was prüft der Modellfit hier genau?"):
-        st.write("Das Grundmodell hat 9 freie Parameter (df = 6). Zwei autoregressive Pfade ergänzen 2 Parameter; zwei Restkovarianzen ergänzen weitere 2. Je nach Auswahl bleiben 6, 4 oder 2 Freiheitsgrade. Zeitübergreifende Restkovarianzen und Kreuzpfade zwischen Leistung und Angst werden auf null gesetzt.")
-        st.write("Der Fit prüft, ob die Einschränkungen des gewählten Modells mit den Daten vereinbar sind. Er prüft nicht, ob die Pfade theoretisch die richtige Richtung oder ausreichende Stärke haben. Mit autoregressiven Pfaden sind die direkten T2-Koeffizienten um den jeweiligen T1-Wert bereinigt; sie dürfen nicht mit einfachen Korrelationen gleichgesetzt werden.")
+        st.write("Das Grundmodell hat 9 freie Parameter (df = 6). Zwei autoregressive Pfade, zwei kreuzverzögerte Pfade und zwei Restkovarianzen ergänzen jeweils 2 Parameter. Sind alle drei Optionen aktiv, ist das Modell gesättigt (15 Parameter, df = 0). Nur die Kreuzpfade hinzuzufügen sättigt das Modell also noch nicht, solange andere Einschränkungen bestehen. Zeitübergreifende Restkovarianzen bleiben auf null gesetzt.")
+        st.write("Der Fit prüft, ob die Einschränkungen des gewählten Modells mit den Daten vereinbar sind. Er prüft nicht, ob die Pfade theoretisch die richtige Richtung oder ausreichende Stärke haben. Mit autoregressiven Pfaden sind die direkten T2-Koeffizienten um den jeweiligen T1-Wert bereinigt; mit zusätzlichen Kreuzpfaden werden beide T1-Kriterien berücksichtigt; sie dürfen nicht mit einfachen Korrelationen gleichgesetzt werden.")
         fitted = result['sigma'] / np.sqrt(np.outer(np.diag(result['sigma']), np.diag(result['sigma'])))
         st.write("Vom Modell vorhergesagte Korrelationsmatrix")
         st.dataframe(pd.DataFrame(fitted, index=names, columns=names).round(3), use_container_width=True)
@@ -2842,8 +2873,9 @@ def module_validity():
         st.caption("Normalverteilte kontinuierliche Variablen, vollständige Daten, normaltheoretische Maximum-Likelihood-Schätzung. Die Pfade und Varianzen werden gemeinsam numerisch geschätzt; die Konvergenz wird geprüft. χ² = N · FML bei einer Kovarianzmatrix mit Divisor N; RMSEA verwendet N−1. CFI wird auf 0–1 begrenzt, TLI nicht. Grundlage der Fitindizes: https://semopy.com/docs/stats.html")
     st.info("Validität betrifft die begründete Interpretation und Verwendung der Testwerte. Ein passendes Zusammenhangsmuster liefert dafür Evidenz. Ein guter Modellfit allein beweist weder Validität noch Kausalität. Für Vorhersagen bei neuen Personen ist zusätzlich eine Prüfung an unabhängigen Daten wichtig.")
     st.markdown("#### Ausprobieren")
-    st.write("1. Lassen Sie die zeitliche Stabilität bei 0,5 und schalten Sie die autoregressiven Pfade im Modell aus und ein. Wie verändern sich die direkten T2-Pfade und der Fit?\n\n2. Setzen Sie beide direkten T2-Pfade auf null: Kann der Lernkompetenztest trotzdem mit den späteren Kriterien korrelieren?\n\n3. Setzen Sie die zeitliche Stabilität auf null. Braucht das Modell dann noch autoregressive Pfade?")
+    st.write("1. Lassen Sie die zeitliche Stabilität bei 0,5 und schalten Sie die autoregressiven Pfade im Modell aus und ein. Wie verändern sich die direkten T2-Pfade und der Fit?\n\n2. Setzen Sie beide direkten T2-Pfade auf null: Kann der Lernkompetenztest trotzdem mit den späteren Kriterien korrelieren?\n\n3. Stellen Sie einen kreuzverzögerten Zusammenhang ein und schalten Sie die Kreuzpfade im Modell aus und ein.\n\n4. Aktivieren Sie autoregressive Pfade, Kreuzpfade und beide Restzusammenhänge: Warum ist der perfekte Fit dieses gesättigten Modells kein Qualitätsnachweis?")
     exam_questions("validity", [
+        ("Warum beweist der perfekte Fit eines gesättigten Modells keine Validität?", "Mit df = 0 gibt es keine prüfbaren Einschränkungen der Kovarianzmatrix mehr. Das Modell kann die Stichprobenmatrix vollständig reproduzieren; die inhaltlichen Annahmen werden dadurch nicht bestätigt."),
         ("Was zeigt der Pfad vom Lernkompetenztest zur späteren Schulleistung, wenn der autoregressive Pfad berücksichtigt wird?", "Er beschreibt den zusätzlichen Zusammenhang mit der späteren Leistung unter Berücksichtigung der bereits zu T1 gemessenen Leistung. Er ist kein Beweis für eine kausale Wirkung."),
         ("Bedeutet eine negative Korrelation, dass der Test nicht valide ist?", "Nein. Wenn die Theorie einen negativen Zusammenhang vorhersagt, kann dieser die Interpretation der Testwerte stützen."),
         ("Belegt ein guter Modellfit die Validität des Ausgangstests?", "Nein. Er zeigt, dass die Einschränkungen des Modells mit den Daten vereinbar sind. Zusätzlich müssen Richtung und Stärke der Zusammenhänge zur Theorie und zum Verwendungszweck passen."),
