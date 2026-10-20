@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.8.1"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -364,7 +364,6 @@ def sidebar():
             "5 · Itemanalyse",
             "6 · Reliabilitätsschätzung",
             "7 · Validität",
-            "8 · Attenuationskorrektur",
         ],
         index=[
             "1 · Mittelwert & Varianz",
@@ -374,7 +373,6 @@ def sidebar():
             "5 · Itemanalyse",
             "6 · Reliabilitätsschätzung",
             "7 · Validität",
-            "8 · Attenuationskorrektur",
         ].index(
             st.session_state.module
             if st.session_state.module in [
@@ -385,7 +383,6 @@ def sidebar():
                 "5 · Itemanalyse",
                 "6 · Reliabilitätsschätzung",
                 "7 · Validität",
-                "8 · Attenuationskorrektur",
             ]
             else "2 · Zusammenhang zweier Variablen"
         )
@@ -2757,6 +2754,15 @@ def validity_fit(data, paired=False, autoregressive=False, crosslagged=False):
 def module_validity():
     version_badge()
     st.title("7 · Validität")
+    section = st.radio("Lernschritt", ["7A · Validierung mit einem Pfadmodell", "7B · Attenuationskorrektur"], horizontal=True, key="validity_section")
+    if section.startswith("7B"):
+        module_attenuation()
+    else:
+        validity_path_model()
+
+
+def validity_path_model():
+    st.subheader("7A · Validierung mit einem Pfadmodell")
     st.write("Wir entwickeln einen Lernkompetenztest: Hohe Werte sollen für erfolgreiches, selbstständiges Lernen stehen. Zur Validierung erheben wir Schulleistung (hohe Werte = gute Leistung) und Prüfungsangst (hohe Werte = starke Angst), jeweils zu Schuljahresbeginn (T1) und sechs Monate später (T2).")
     st.info("Hier bedeutet positiv bzw. negativ die erwartete Richtung des Zusammenhangs – nicht gute bzw. schlechte Validität. Auch ein negativer Zusammenhang kann die Interpretation eines Tests stützen. Für ein theoretisch unabhängiges Merkmal kann ein Zusammenhang nahe null erwartet werden.")
     names = ["Lernkompetenz T1", "Schulleistung T1", "Prüfungsangst T1", "Schulleistung T2", "Prüfungsangst T2"]
@@ -2921,8 +2927,7 @@ def attenuation_venn(correlation, title, labels):
 
 
 def module_attenuation():
-    version_badge()
-    st.title("8 · Attenuationskorrektur")
+    st.subheader("7B · Attenuationskorrektur")
     st.write("Ein Lernkompetenztest X korreliert mit einem Schulleistungstest Y. Beide messen mit Fehlern. Wie stark würden ihre wahren Werte zusammenhängen, wenn diese Messfehler entfielen?")
     mode = st.radio("Was möchten Sie untersuchen?", ["Beobachtete Korrelation korrigieren", "Abschwächung durch Messfehler zeigen"], key="att_mode", horizontal=True)
     forward = mode.startswith("Abschwächung")
@@ -2992,8 +2997,6 @@ elif module.startswith("6"):
     module_reliability()
 elif module.startswith("7"):
     module_validity()
-elif module.startswith("8"):
-    module_attenuation()
 
 st.divider()
 st.caption(
