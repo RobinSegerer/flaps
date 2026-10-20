@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.9.0"
+APP_VERSION = "1.9.1"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2934,40 +2934,41 @@ def attenuation_venn(correlation, title, labels):
 def module_attenuation():
     st.subheader("7A · Attenuationskorrektur")
     st.write("Ein Lernkompetenztest X korreliert mit einem Schulleistungstest Y. Beide messen mit Fehlern. Wie stark würden ihre wahren Werte zusammenhängen, wenn diese Messfehler entfielen?")
-    mode = st.radio("Was möchten Sie untersuchen?", ["Beobachtete Korrelation korrigieren", "Abschwächung durch Messfehler zeigen"], key="att_mode", horizontal=True)
-    forward = mode.startswith("Abschwächung")
+    mode = st.radio("Was möchten Sie untersuchen?", ["Messfehler reduzieren – Überlappung beobachten", "Beobachtete Korrelation korrigieren"], key="att_mode_dynamic", horizontal=True)
+    forward = mode.startswith("Messfehler")
     if forward:
         correlation = st.slider("Korrelation der wahren Werte", -1.0, 1.0, 0.7, 0.05, key="att_true")
     else:
         correlation = st.slider("Beobachtete Korrelation r(X,Y)", -1.0, 1.0, 0.4, 0.05, key="att_observed")
     cols = st.columns(2)
-    with cols[0]:
-        rel_x = st.slider("Reliabilität des Lernkompetenztests Rel(X)", 0.1, 1.0, 0.7, 0.05, key="att_rel_x")
-    with cols[1]:
-        rel_y = st.slider("Reliabilität des Schulleistungstests Rel(Y)", 0.1, 1.0, 0.8, 0.05, key="att_rel_y")
+    if forward:
+        with cols[0]:
+            error_x = st.slider("Messfehleranteil Lernkompetenztest (%)", 0, 90, 30, 5, key="att_error_x")
+        with cols[1]:
+            error_y = st.slider("Messfehleranteil Schulleistungstest (%)", 0, 90, 20, 5, key="att_error_y")
+        rel_x, rel_y = 1-error_x/100, 1-error_y/100
+        st.caption(f"Anteil der Messfehlervarianz an der Gesamtvarianz: Rel(X) = {rel_x:.2f}, Rel(Y) = {rel_y:.2f}. Verringern Sie die Fehleranteile und beobachten Sie die wachsende Überlappung.")
+    else:
+        with cols[0]:
+            rel_x = st.slider("Reliabilität des Lernkompetenztests Rel(X)", 0.1, 1.0, 0.7, 0.05, key="att_rel_x")
+        with cols[1]:
+            rel_y = st.slider("Reliabilität des Schulleistungstests Rel(Y)", 0.1, 1.0, 0.8, 0.05, key="att_rel_y")
     observed, corrected, factor = attenuation_values(correlation, rel_x, rel_y, forward)
     st.latex(r"\widehat{Corr}(T_X,T_Y)=\frac{r(X,Y)}{\sqrt{Rel(X)\,Rel(Y)}}")
     st.latex(r"\frac{%.3f}{\sqrt{%.2f\cdot %.2f}}=%.3f" % (observed, rel_x, rel_y, corrected))
     metrics = st.columns(3)
     metrics[0].metric("Beobachtete Korrelation", f"{observed:+.3f}")
-    metrics[1].metric("Korrigierte Korrelation", f"{corrected:+.3f}")
+    metrics[1].metric("Korrelation der wahren Werte" if forward else "Korrigierte Korrelation", f"{corrected:+.3f}")
     metrics[2].metric("Maximal möglicher Betrag von r(X,Y)", f"{factor:.3f}")
     valid = abs(corrected) <= 1+1e-10
     if not valid:
-        st.warning("Die Korrektur ergibt einen Betrag über 1. Das ist keine mögliche Korrelation. Diese Werte sind als Populationswerte mit den Modellannahmen unvereinbar. Bei empirischen Schätzungen können auch Stichprobenschwankungen, unzutreffende Reliabilitätsschätzungen oder verletzte Annahmen dazu führen. Der Wert wird nicht auf 1 gekürzt; ein korrigiertes Venn-Diagramm lässt sich dafür nicht zeichnen.")
-    else:
-        st.markdown("#### Überlappung vor und nach der Korrektur")
-    charts = st.columns(2)
-    with charts[0]:
-        st.plotly_chart(attenuation_venn(observed, "Beobachtete Testwerte", ["X", "Y"]), use_container_width=True)
-    with charts[1]:
-        if valid:
-            st.plotly_chart(attenuation_venn(corrected, "Wahre Werte · korrigiert", ["Tₓ", "Tᵧ"]), use_container_width=True)
-        else:
-            st.info("Keine darstellbare korrigierte Korrelation: |r| > 1.")
-    st.caption("Venn-Darstellung als Veranschaulichung: Jeder Kreis steht für 100 % der jeweiligen standardisierten Varianz. Die Schnittfläche beträgt r² der Fläche eines Kreises – den in einer einfachen linearen Regression erklärten Varianzanteil. Sie zeigt weder die Korrelation r selbst noch einen kausalen Anteil. Positive und negative Korrelationen gleichen Betrags haben dieselbe Überlappung. Beide Darstellungen sind jeweils neu auf 100 % skaliert; die Kreise zeigen keine absoluten Varianzen und keine Fehleranteile.")
+        st.warning("Die Korrektur ergibt einen Betrag über 1. Das ist keine mögliche Korrelation. Diese Werte sind als Populationswerte mit den Modellannahmen unvereinbar. Bei empirischen Schätzungen können auch Stichprobenschwankungen, unzutreffende Reliabilitätsschätzungen oder verletzte Annahmen dazu führen. Der Wert wird nicht auf 1 gekürzt.")
     if forward:
-        st.info("Hier bleibt die Korrelation der wahren Werte fest. Senken Sie eine Reliabilität: Die beobachtete Korrelation rückt näher an null, obwohl der Zusammenhang der wahren Werte unverändert bleibt.")
+        st.markdown("#### Weniger Messfehler – größere Überlappung")
+        st.plotly_chart(attenuation_venn(observed, "Zusammenhang der beobachteten Testwerte", ["Lernkompetenz X", "Schulleistung Y"]), use_container_width=True, key="att_dynamic_venn")
+        st.caption(f"Aktuelle Überlappung: {observed**2:.1%}. Ohne Messfehler: {corrected**2:.1%}. Die Korrelation der wahren Werte bleibt beim Verändern der Fehleranteile bei {corrected:+.2f}.")
+        st.caption("Jeder Kreis steht für 100 % der jeweiligen standardisierten Varianz. Die Schnittfläche beträgt r² einer Kreisfläche, also den in einer einfachen linearen Regression erklärten Varianzanteil. Die Darstellung wird jeweils standardisiert: Größere Überlappung bedeutet einen größeren relativen Anteil, nicht automatisch größere absolute Kovarianz. Das Vorzeichen ist nicht an der Fläche erkennbar; bei r = 0 bleiben die Kreise auch ohne Messfehler ohne Überlappung.")
+        st.info("Die Regler verändern die Messqualität bei festem Zusammenhang der wahren Werte. Weniger Messfehler führen zu einer betragsmäßig höheren beobachteten Korrelation. Das ist eine hypothetische Verbesserung der Messung; eine rechnerische Attenuationskorrektur allein verbessert keine Testwerte.")
         st.latex(r"Corr(X,Y)=Corr(T_X,T_Y)\sqrt{Rel(X)\,Rel(Y)}")
     else:
         st.info("Hier bleibt die beobachtete Korrelation fest. Je niedriger die angenommenen Reliabilitäten, desto stärker fällt die Korrektur aus. Sie schätzt einen Zusammenhang der wahren Werte; sie verbessert nicht nachträglich die gemessenen Testwerte.")
@@ -2977,7 +2978,7 @@ def module_attenuation():
         st.write("Bei Rel(X) = Rel(Y) = 1 entfällt die Korrektur. Bei Reliabilität 0 ist sie nicht definiert; deshalb beginnen die Regler über null. Das Vorzeichen bleibt erhalten, und eine Korrelation von null bleibt null.")
         st.markdown("Methodischer Hintergrund: [Zimmerman (2007): Correction for Attenuation With Biased Reliability Estimates and Correlated Errors](https://doi.org/10.1177/0013164406299132).")
     st.markdown("#### Ausprobieren")
-    st.write("1. Stellen Sie beide Reliabilitäten auf 1: Was geschieht mit der Korrektur?\n\n2. Wechseln Sie zur Abschwächung durch Messfehler. Halten Sie die Korrelation der wahren Werte bei 0,70 und senken Sie die Reliabilitäten.\n\n3. Vergleichen Sie +0,40 und −0,40: Was ändert sich im Zahlenwert, was in der Überlappung?")
+    st.write("1. Halten Sie die Korrelation der wahren Werte bei 0,70. Senken Sie die Messfehleranteile schrittweise bis auf 0 %: Wie verändert sich die Überlappung?\n\n2. Vergleichen Sie +0,40 und −0,40: Was ändert sich im Zahlenwert, was in der Überlappung?\n\n3. Wechseln Sie zur rechnerischen Korrektur. Weshalb ist das etwas anderes als eine Verbesserung der Messung?")
     exam_questions("attenuation", [
         ("Warum kann eine beobachtete Korrelation trotz eines starken Zusammenhangs der wahren Werte niedrig sein?", "Unkorrelierte Messfehler erhöhen die Varianzen, ohne zur Kovarianz zwischen den Tests beizutragen. Dadurch wird die Korrelation dem Betrag nach abgeschwächt."),
         ("Werden negative Korrelationen durch die Attenuationskorrektur positiv?", "Nein. Der Nenner ist positiv; das Vorzeichen bleibt erhalten. Eine negative Korrelation wird bei unvollständiger Reliabilität dem Betrag nach größer."),
