@@ -6,7 +6,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
 
-APP_VERSION = "1.8.1"
+APP_VERSION = "1.9.0"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -2754,18 +2754,23 @@ def validity_fit(data, paired=False, autoregressive=False, crosslagged=False):
 def module_validity():
     version_badge()
     st.title("7 · Validität")
-    section = st.radio("Lernschritt", ["7A · Validierung mit einem Pfadmodell", "7B · Attenuationskorrektur"], horizontal=True, key="validity_section")
-    if section.startswith("7B"):
+    section = st.radio("Lernschritt", ["7A · Attenuationskorrektur", "7B · Validierung mit einem Pfadmodell", "7C · Innere Struktur"], horizontal=True, key="validity_section_v2")
+    if section.startswith("7A"):
         module_attenuation()
-    else:
+    elif section.startswith("7B"):
         validity_path_model()
+    else:
+        validity_structure()
 
 
 def validity_path_model():
-    st.subheader("7A · Validierung mit einem Pfadmodell")
+    st.subheader("7B · Validierung mit einem Pfadmodell")
     st.write("Wir entwickeln einen Lernkompetenztest: Hohe Werte sollen für erfolgreiches, selbstständiges Lernen stehen. Zur Validierung erheben wir Schulleistung (hohe Werte = gute Leistung) und Prüfungsangst (hohe Werte = starke Angst), jeweils zu Schuljahresbeginn (T1) und sechs Monate später (T2).")
     st.info("Hier bedeutet positiv bzw. negativ die erwartete Richtung des Zusammenhangs – nicht gute bzw. schlechte Validität. Auch ein negativer Zusammenhang kann die Interpretation eines Tests stützen. Für ein theoretisch unabhängiges Merkmal kann ein Zusammenhang nahe null erwartet werden.")
     names = ["Lernkompetenz T1", "Schulleistung T1", "Prüfungsangst T1", "Schulleistung T2", "Prüfungsangst T2"]
+    with st.expander("Welche Validitätsfragen stecken im Pfadmodell?"):
+        st.write("Das Modell untersucht simultane und prospektive Beziehungen zu Außenkriterien. Konvergente und diskriminante Evidenz beurteilt man anhand theoretisch erwarteter stärkerer bzw. schwächerer Beziehungen. Eine negative Korrelation allein ist keine diskriminante Evidenz. Schulleistung und Prüfungsangst sind hier Außenkriterien und keine zweiten Messungen derselben Lernkompetenz.")
+        st.write("Inkrementelle Validität: Mit den T1-Kriterien als zusätzlichen Prädiktoren lässt sich untersuchen, ob der Lernkompetenztest darüber hinaus zur Vorhersage der T2-Kriterien beiträgt. Die direkten Pfade zeigen den bedingten Zusammenhang; für die praktische Bedeutung ist auch der zusätzliche erklärte Varianzanteil relevant.")
     st.markdown("#### 1 · Zusammenhänge simulieren")
     st.caption("Unsere Hypothese: Lernkompetenz hängt positiv mit Schulleistung und negativ mit Prüfungsangst zusammen. Die Regler bestimmen standardisierte direkte Pfade in der simulierten Population. Mit zeitlicher Stabilität sind die direkten T2-Pfade nicht gleich den einfachen Korrelationen.")
     cols = st.columns(2)
@@ -2927,7 +2932,7 @@ def attenuation_venn(correlation, title, labels):
 
 
 def module_attenuation():
-    st.subheader("7B · Attenuationskorrektur")
+    st.subheader("7A · Attenuationskorrektur")
     st.write("Ein Lernkompetenztest X korreliert mit einem Schulleistungstest Y. Beide messen mit Fehlern. Wie stark würden ihre wahren Werte zusammenhängen, wenn diese Messfehler entfielen?")
     mode = st.radio("Was möchten Sie untersuchen?", ["Beobachtete Korrelation korrigieren", "Abschwächung durch Messfehler zeigen"], key="att_mode", horizontal=True)
     forward = mode.startswith("Abschwächung")
@@ -2978,6 +2983,143 @@ def module_attenuation():
         ("Werden negative Korrelationen durch die Attenuationskorrektur positiv?", "Nein. Der Nenner ist positiv; das Vorzeichen bleibt erhalten. Eine negative Korrelation wird bei unvollständiger Reliabilität dem Betrag nach größer."),
         ("Was bedeutet eine korrigierte Korrelation von 1,20?", "Sie ist keine mögliche Korrelation. Die eingesetzten Werte und die Annahmen müssen geprüft werden; der Wert darf nicht als besonders starke Korrelation interpretiert werden."),
     ])
+
+
+def structure_fit(data, groups, correlated=True):
+    """Simple-structure Gaussian CFA, factor variances fixed to one."""
+    from scipy.optimize import minimize
+    from scipy.stats import chi2
+    groups = np.asarray(groups, dtype=int)
+    dimensions = int(groups.max())+1
+    p = len(groups)
+    s = np.cov(data, rowvar=False, bias=True)
+    logdet_s = np.linalg.slogdet(s)[1]
+    free_rho = dimensions == 2 and correlated
+    def matrices(par):
+        lam = np.zeros((p, dimensions))
+        lam[np.arange(p), groups] = par[:p]
+        phi = np.eye(dimensions)
+        if free_rho:
+            phi[0, 1] = phi[1, 0] = np.tanh(par[-1])
+        theta = np.exp(par[p:2*p])
+        return lam, phi, theta
+    def objective(par):
+        lam, phi, theta = matrices(par)
+        sigma = lam@phi@lam.T + np.diag(theta)
+        inv = np.linalg.inv(sigma)
+        value = np.linalg.slogdet(sigma)[1]+np.trace(inv@s)-logdet_s-p
+        g = inv-inv@s@inv
+        gl = 2*g@lam@phi
+        gradient = list(gl[np.arange(p), groups])+list(np.diag(g)*theta)
+        if free_rho:
+            gradient.append(2*(lam.T@g@lam)[0, 1]*(1-np.tanh(par[-1])**2))
+        return value, np.asarray(gradient)
+    start = list(np.sqrt(np.diag(s)*.5))+list(np.log(np.diag(s)*.5))
+    if free_rho:
+        start += [np.arctanh(.3)]
+    bounds = [(-3.,3.)]*p + [(-12.,5.)]*p + ([(-4.,4.)] if free_rho else [])
+    for group in range(dimensions):
+        bounds[int(np.flatnonzero(groups == group)[0])] = (.001,3.)
+    fit = minimize(objective, start, jac=True, method="L-BFGS-B", bounds=bounds,
+                   options=dict(ftol=1e-12, gtol=1e-7, maxiter=1500))
+    if not fit.success or not np.isfinite(fit.fun):
+        raise RuntimeError("Dieses Modell konnte nicht zuverlässig geschätzt werden. Bitte die Itemzuordnung oder Stichprobe ändern.")
+    lam, phi, theta = matrices(fit.x)
+    sigma = lam@phi@lam.T+np.diag(theta)
+    n = len(data)
+    df = p*(p+1)//2-len(start)
+    stat = max(0., n*fit.fun)
+    baseline = max(0., n*(np.log(np.diag(s)).sum()-logdet_s))
+    base_df = p*(p-1)//2
+    excess = max(stat-df,0.)
+    base_excess = baseline-base_df
+    return dict(chi2=stat, df=df, p=chi2.sf(stat,df), RMSEA=np.sqrt(excess/(df*(n-1))),
+                CFI=1-excess/max(excess,base_excess) if base_excess>1e-10 else np.nan,
+                TLI=(baseline/base_df-stat/df)/(baseline/base_df-1) if base_excess>1e-10 else np.nan,
+                rho=phi[0,1] if dimensions==2 else np.nan,
+                loadings=lam[np.arange(p),groups]/np.sqrt(np.diag(sigma)),
+                boundary=bool(theta.min()<1e-4 or (free_rho and abs(phi[0,1])>.995)))
+
+
+def validity_structure():
+    st.subheader("7C · Innere Struktur des Lernkompetenztests")
+    st.write("Bisher ging es um Zusammenhänge mit Schulleistung und Prüfungsangst. Jetzt schauen wir in den Lernkompetenztest hinein: Erfassen seine acht Items einen gemeinsamen Bereich oder zwei unterscheidbare Facetten – Lernplanung und Selbstkontrolle?")
+    items = [
+        "Ich plane feste Zeiten zum Lernen ein.",
+        "Ich teile größere Lernaufgaben in Schritte auf.",
+        "Ich setze mir vor dem Lernen konkrete Ziele.",
+        "Ich entscheide, welche Lernaufgaben Vorrang haben.",
+        "Ich bleibe beim Lernen, auch wenn etwas anderes lockt.",
+        "Ich arbeite weiter, wenn eine Aufgabe schwierig wird.",
+        "Ich lasse mich beim Lernen wenig ablenken.",
+        "Ich beginne eine geplante Lernaufgabe ohne langes Aufschieben.",
+    ]
+    labels = [f"Item {i+1}" for i in range(8)]
+    st.caption("Fiktive Beispielitems, keine validierte Skala. Für diese Demonstration simulieren wir kontinuierliche, normalverteilte Itemwerte; echte Likert-Antworten können andere Schätzverfahren erfordern.")
+    with st.expander("Die acht Items ansehen", expanded=True):
+        for i in [0,4,1,5,2,6,3,7]:
+            st.write(f"**Item {i+1}:** {items[i]}")
+    within = st.slider("Zusammenhang der Items innerhalb derselben Facette", .2, .8, .6, .05, key="structure_within")
+    rho = st.slider("Zusammenhang zwischen Lernplanung und Selbstkontrolle", 0., 1., .3, .05, key="structure_rho")
+    st.caption(f"In der simulierten Population korrelieren Items derselben Facette mit {within:.2f}, Items verschiedener Facetten mit {within*rho:.2f}. Bei einer Facettenkorrelation von 1 verschwindet die Trennung im Zusammenhangsmuster.")
+    n = st.select_slider("Anzahl Personen", options=[100,200,500,1000,2000], value=500, key="structure_n")
+    if "structure_seed" not in st.session_state:
+        st.session_state.structure_seed = 17
+    if st.button("Neue Stichprobe ziehen", key="structure_resample"):
+        st.session_state.structure_seed += 1
+    group = np.array([0]*4+[1]*4)
+    population = np.where(group[:,None]==group[None,:], within, within*rho)
+    np.fill_diagonal(population,1.)
+    data = np.random.default_rng(st.session_state.structure_seed).normal(size=(n,8))@np.linalg.cholesky(population).T
+    corr = np.corrcoef(data,rowvar=False)
+    ordered = st.toggle("Nach Facetten ordnen", key="structure_ordered")
+    order = list(range(8)) if ordered else [0,4,1,5,2,6,3,7]
+    fig = go.Figure(go.Heatmap(z=corr[np.ix_(order,order)], x=[labels[i] for i in order],
+                              y=[labels[i] for i in order], zmin=-1,zmax=1, colorscale="RdBu", reversescale=True,
+                              texttemplate="%{z:.2f}", colorbar=dict(title="r")))
+    fig.update_layout(height=480, margin=dict(t=20,b=20), yaxis=dict(autorange="reversed"))
+    st.plotly_chart(fig,use_container_width=True)
+    if ordered:
+        st.caption("Items 1–4: Lernplanung. Items 5–8: Selbstkontrolle. Das Umordnen verändert keine Korrelationen.")
+    st.info("Erkennen Sie zwei Gruppen eng zusammenhängender Items? Zwei Blöcke sprechen für unterscheidbare Bereiche, beweisen aber noch keine bestimmte Faktorenstruktur. Auch der Inhalt der Items zählt. Eine Faktorenanalyse untersucht solche Annahmen systematisch.")
+    st.markdown("#### Ausprobieren")
+    st.write("1. Vergleichen Sie eine Facettenkorrelation von 0,20 und 0,90: Wie deutlich erscheinen zwei Blöcke?\n\n2. Ordnen Sie die Matrix nach Facetten. Was wird sichtbar?\n\n3. Prüfen Sie am Ende, ob eine oder zwei Dimensionen das Muster besser beschreiben.")
+    with st.expander("Ausblick: Dimensionen zuordnen und Modellfit einblenden"):
+        st.write("Hier formulieren Sie ein Modell für dieselben Daten. Die Modellwahl verändert die simulierte Stichprobe nicht. Jedes Item wird genau einer Dimension zugeordnet; zusätzliche Zusammenhänge zwischen Itemrestanteilen werden auf null gesetzt.")
+        dimensions = st.radio("Anzahl Dimensionen im Modell", [1,2], index=1, horizontal=True, key="structure_dimensions")
+        assigned = np.zeros(8,dtype=int)
+        correlated = False
+        if dimensions == 2:
+            first = st.multiselect("Items der ersten Dimension (alle übrigen gehören zur zweiten)", labels, default=labels[:4], key="structure_assignment")
+            if len(first)<3 or len(first)>5:
+                st.info("Für diesen einfachen Modellvergleich bitte jeder Dimension mindestens drei Items zuordnen.")
+                return
+            assigned = np.array([0 if label in first else 1 for label in labels])
+            correlated = st.checkbox("Korrelation der beiden Dimensionen frei schätzen", value=True, key="structure_correlated")
+            if not correlated:
+                st.caption("Das Modell setzt die Korrelation der Dimensionen auf 0.")
+        if st.button("Modell schätzen und Fitwerte anzeigen", key="structure_fit"):
+            try:
+                result = structure_fit(data, assigned, correlated)
+            except RuntimeError as error:
+                st.error(str(error))
+                return
+            cells = st.columns(4)
+            cells[0].metric(f"χ² (df = {result['df']})",f"{result['chi2']:.2f}")
+            for cell,key in zip(cells[1:],["RMSEA","CFI","TLI"]):
+                cell.metric(key,f"{result[key]:.3f}" if np.isfinite(result[key]) else "nicht bestimmbar")
+            st.caption(f"χ²-Test: p = {result['p']:.4f}. 36 Varianzen/Kovarianzen minus {36-result['df']} freie Parameter.")
+            if dimensions==2:
+                sums = [data[:,assigned==g].sum(axis=1) for g in [0,1]]
+                c1,c2 = st.columns(2)
+                c1.metric("Korrelation der Dimensionen (Modell)", f"{result['rho']:.3f}")
+                c2.metric("Korrelation der beiden Summenskalen", f"{np.corrcoef(sums)[0,1]:.3f}")
+                st.caption("Dimensionen sind die im Modell angenommenen gemeinsamen Merkmale; Summenskalen sind die tatsächlich aufsummierten Itemwerte einschließlich Messfehler. Ihre Korrelationen sind daher nicht gleichzusetzen – das knüpft an die Attenuationskorrektur an.")
+            st.dataframe(pd.DataFrame({"Item":labels,"Inhalt":items,"Dimension":assigned+1,"Standardisierte Ladung":np.round(result['loadings'],3)}),hide_index=True,use_container_width=True)
+            if result['boundary']:
+                st.warning("Die Schätzung liegt nahe einer Grenze (sehr kleine Restvarianz oder nahezu perfekte Dimensionskorrelation). Das Modell ist dann schwer eindeutig zu interpretieren; insbesondere sind zwei fast identische Dimensionen kaum unterscheidbar.")
+            st.write("Kleinerer RMSEA und CFI/TLI näher bei 1 sprechen für bessere Passung; χ² prüft die exakten Einschränkungen und reagiert auf die Stichprobengröße. Vergleichen Sie die Modelle zusammen mit der Itembedeutung. Ein besserer Fit allein beweist keine Konstruktvalidität; wir verwenden keine starren Bestehensgrenzen.")
+            st.caption("Vorschau auf die konfirmatorische Faktorenanalyse: normaltheoretische Maximum-Likelihood-Schätzung, Faktorvarianzen auf 1 fixiert, freie Ladungen und positive Restvarianzen, keine Kreuzladungen. Die Vorzeichen werden über ein positiv ladendes Referenzitem pro Dimension orientiert. Eine Dimension: df = 20; zwei korrelierte Dimensionen: df = 19; zwei unkorrelierte Dimensionen: df = 20. Methodischer Hintergrund: https://semopy.com/syntax.html")
 
 
 # Router
