@@ -7,7 +7,7 @@ import plotly.express as px
 from pathlib import Path
 from factor_modules import module_efa, module_cfa
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.0.1"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
