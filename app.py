@@ -5,8 +5,9 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
 from pathlib import Path
+from factor_modules import module_efa, module_cfa
 
-APP_VERSION = "1.9.1"
+APP_VERSION = "2.0.0"
 
 APP_DIR = Path(__file__).resolve().parent
 LOGO_PATH = APP_DIR / "flaps_logo.png"
@@ -364,6 +365,8 @@ def sidebar():
             "5 · Itemanalyse",
             "6 · Reliabilitätsschätzung",
             "7 · Validität",
+            "8 · Exploratorische Faktorenanalyse",
+            "9 · Konfirmatorische Faktorenanalyse",
         ],
         index=[
             "1 · Mittelwert & Varianz",
@@ -373,6 +376,8 @@ def sidebar():
             "5 · Itemanalyse",
             "6 · Reliabilitätsschätzung",
             "7 · Validität",
+            "8 · Exploratorische Faktorenanalyse",
+            "9 · Konfirmatorische Faktorenanalyse",
         ].index(
             st.session_state.module
             if st.session_state.module in [
@@ -383,6 +388,8 @@ def sidebar():
                 "5 · Itemanalyse",
                 "6 · Reliabilitätsschätzung",
                 "7 · Validität",
+                "8 · Exploratorische Faktorenanalyse",
+                "9 · Konfirmatorische Faktorenanalyse",
             ]
             else "2 · Zusammenhang zweier Variablen"
         )
@@ -3140,6 +3147,10 @@ elif module.startswith("6"):
     module_reliability()
 elif module.startswith("7"):
     module_validity()
+elif module.startswith("8"):
+    module_efa()
+elif module.startswith("9"):
+    module_cfa()
 
 st.divider()
 st.caption(
