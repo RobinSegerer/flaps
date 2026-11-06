@@ -87,12 +87,28 @@ def efa_data():
     r = generated_data(within,rho,first,n,st.session_state.efa_seed)
     manual = st.checkbox('Korrelationsmatrix selbst bearbeiten',key='efa_manual')
     if manual:
-        st.caption('Nur Werte oberhalb der Diagonale werden übernommen und gespiegelt. N wird für Tests und Parallelanalyse als angenommene Stichprobengröße verwendet; zu einer frei bearbeiteten Matrix liegen keine Rohdaten vor.')
-        edited = st.data_editor(pd.DataFrame(r,index=ITEMS,columns=ITEMS),key='efa_editor',use_container_width=True)
-        upper = np.triu(edited.to_numpy(dtype=float),1)
-        r = upper+upper.T+np.eye(8)
+        st.caption('Itempaar auswählen und seine Korrelation mit dem Regler ändern. Beide Matrixhälften werden direkt aktualisiert. Änderungen der Simulationsregler erzeugen eine neue Ausgangsmatrix und setzen manuelle Eingaben zurück.')
+        pairs = [(i,j) for i in range(8) for j in range(i+1,8)]
+        base_id = hashlib.sha256(r.tobytes()).hexdigest()[:12]
+        if st.session_state.get('efa_manual_base')!=base_id:
+            st.session_state.efa_manual_base=base_id
+            st.session_state.efa_pair_edits={}
+        names=[f'{ITEMS[i]} ↔ {ITEMS[j]}' for i,j in pairs]
+        chosen=st.selectbox('Itempaar ändern',names,key='efa_pair_choice')
+        pair_index=names.index(chosen)
+        i,j=pairs[pair_index]
+        slider_key=f'efa_pair_value_{base_id}_{pair_index}'
+        initial=st.session_state.efa_pair_edits.get(str(pair_index),float(r[i,j]))
+        def save_pair():
+            st.session_state.efa_pair_edits[str(pair_index)]=st.session_state[slider_key]
+        st.slider('Korrelation des ausgewählten Itempaares',-1.,1.,initial,.01,
+                  key=slider_key,on_change=save_pair,format='%.3f')
+        for index,value in st.session_state.efa_pair_edits.items():
+            i,j=pairs[int(index)]
+            r[i,j]=r[j,i]=value
     try: r=validate_matrix(r)
     except ValueError as error:
+        st.session_state.fa_data_invalid=True
         st.error(str(error)); return None
     with st.expander('Itemstandardabweichungen für Kovarianzen, CFA und Reliabilität'):
         st.caption('Die EFA arbeitet mit Korrelationen. Aus diesen Standardabweichungen entsteht die Kovarianzmatrix für CFA und Alpha/Omega. Verschiedene Skalierungen beeinflussen den ungewichteten Summenscore.')
@@ -101,6 +117,7 @@ def efa_data():
     if not np.isfinite(sd).all() or np.any(sd<=0):
         st.error('Alle Standardabweichungen müssen positiv und endlich sein.'); return None
     payload = dict(r=r, covariance=r*np.outer(sd,sd), n=n, manual=manual)
+    st.session_state.fa_data_invalid=False
     st.session_state.fa_data=payload
     return payload
 
@@ -118,6 +135,19 @@ def module_efa():
     payload=efa_data()
     if payload is None: return
     r,n=payload['r'],payload['n']
+    previous = st.session_state.get('efa_previous_matrix')
+    st.session_state.efa_previous_matrix = r.copy()
+    delta = np.max(np.abs(r-previous)) if previous is not None else 0.
+    if delta>1e-12:
+        i,j=np.unravel_index(np.argmax(np.abs(r-previous)),r.shape)
+        st.session_state.efa_change_message=f'Matrix aktualisiert: größte Änderung bei {ITEMS[i]} ↔ {ITEMS[j]} von {previous[i,j]:.3f} auf {r[i,j]:.3f}. KMO, Bartlett und PAF wurden neu berechnet; die PAF-Schritte beginnen wieder bei 0.'
+    if st.session_state.get('efa_change_message'):
+        st.success(st.session_state.efa_change_message)
+    metrics=st.columns(2)
+    within_pairs=[(i,j) for i in range(8) for j in range(i+1,8) if i//4==j//4]
+    between_pairs=[(i,j) for i in range(8) for j in range(i+1,8) if i//4!=j//4]
+    metrics[0].metric('Mittleres r innerhalb der Facetten',f'{np.mean([r[i,j] for i,j in within_pairs]):.3f}')
+    metrics[1].metric('Mittleres r zwischen den Facetten',f'{np.mean([r[i,j] for i,j in between_pairs]):.3f}')
     matrix_view(r,'Empirische Korrelationsmatrix')
     kmo,msa,stat,df,p=diagnostics(r,n)
     c1,c2,c3=st.columns(3)
@@ -139,15 +169,53 @@ def module_efa():
     try: loadings,history,problem=paf(r,factors)
     except ValueError as error:
         st.error(str(error)); return
-    if problem: st.warning(problem)
-    with st.expander('PAF Schritt für Schritt'):
-        step=st.select_slider('Iterationsschritt',options=list(range(len(history))),value=len(history)-1,key='efa_step')
-        st.write('Schritt 0: Startkommunalitäten aus quadrierten multiplen Korrelationen (SMC). Danach ersetzen wir die Diagonale durch die aktuellen Kommunalitäten, extrahieren Faktoren und berechnen neue Kommunalitäten. Abbruch bei maximaler Änderung < 0,000001.')
-        st.dataframe(pd.DataFrame({'Item':ITEMS,'Kommunalität':history[step]}).round(4),hide_index=True)
-        reduced=r.copy(); np.fill_diagonal(reduced,history[step])
-        matrix_view(reduced,f'Reduzierte Matrix nach Schritt {step}')
-        st.caption('Die Ergebnistabellen unten zeigen die letzte berechnete Lösung. Die Diagonale der reduzierten Matrix beschreibt geschätzte gemeinsame Varianz, keine vollständige Itemvarianz.')
-    if problem: return
+    signature=hashlib.sha256(r.tobytes()+str(factors).encode()).hexdigest()
+    if st.session_state.get('efa_iteration_signature')!=signature:
+        st.session_state.efa_iteration_signature=signature
+        st.session_state.efa_iteration=0
+    st.subheader('PAF Schritt für Schritt')
+    st.write('Bei der PAF ändern sich die geschätzten gemeinsamen Varianzen auf der Diagonale. Die empirischen Korrelationen außerhalb der Diagonale bleiben fest. Alle Ergebnisse unten gehören jetzt zum ausgewählten Schritt.')
+    def move_iteration(target):
+        st.session_state.efa_iteration=target
+    current=st.session_state.efa_iteration
+    buttons=st.columns(3)
+    buttons[0].button('← Zurück',key='efa_back',disabled=current==0,on_click=move_iteration,args=(max(0,current-1),))
+    buttons[1].button('Nächster PAF-Schritt →',key='efa_next',disabled=current==len(history)-1,on_click=move_iteration,args=(min(len(history)-1,current+1),))
+    buttons[2].button('Bis zum Ergebnis',key='efa_finish',on_click=move_iteration,args=(len(history)-1,))
+    step=st.select_slider('Iterationsschritt',options=list(range(len(history))),key='efa_iteration')
+    before=history[max(0,step-1)]
+    after=history[step]
+    st.dataframe(pd.DataFrame({'Item':ITEMS,'h² vorher':before,'h² aktuell':after,'Änderung':after-before}).round(6),hide_index=True)
+    reduced=r.copy(); np.fill_diagonal(reduced,after)
+    with st.expander('Reduzierte Matrix dieses Schritts'):
+        st.dataframe(pd.DataFrame(reduced,index=ITEMS,columns=ITEMS).round(6))
+        st.caption('Sechs Dezimalstellen machen auch kleine Änderungen auf der Diagonale sichtbar.')
+    trajectory=go.Figure()
+    for i in range(8):
+        trajectory.add_scatter(x=list(range(len(history))),y=np.asarray(history)[:,i],name=ITEMS[i],mode='lines')
+    trajectory.add_vline(x=step,line_dash='dash')
+    trajectory.update_layout(height=270,xaxis_title='Iterationsschritt',yaxis_title='Kommunalität h²',margin=dict(t=15,b=25))
+    st.plotly_chart(trajectory,use_container_width=True)
+    st.caption('Der Verlauf zeigt alle berechneten Schritte; die gestrichelte Linie markiert den aktuell angezeigten Stand.')
+    if step==0:
+        st.info('Start: Kommunalitäten aus quadrierten multiplen Korrelationen (SMC). Klicken Sie auf „Nächster PAF-Schritt“, um daraus die ersten Ladungen zu bestimmen.')
+        return
+    change=float(np.max(np.abs(after-before)))
+    st.metric('Größte Änderung der Kommunalitäten in diesem Schritt',f'{change:.8f}')
+    if problem and step==len(history)-1:
+        st.warning(problem)
+        return
+    input_matrix=r.copy(); np.fill_diagonal(input_matrix,before)
+    values,vectors=np.linalg.eigh(input_matrix)
+    order=np.argsort(values)[::-1][:factors]
+    loadings=vectors[:,order]*np.sqrt(values[order])
+    for j in range(factors):
+        if loadings[np.argmax(np.abs(loadings[:,j])),j]<0: loadings[:,j]*=-1
+    st.markdown(f'**Ladungen und Modellabweichungen nach Schritt {step}**')
+    if step==len(history)-1:
+        st.success('Konvergiert: maximale Änderung < 0,000001.')
+    else:
+        st.caption('Zwischenstand: Die PAF ist hier noch nicht abgeschlossen. Auch die folgenden Ladungen und Residuen verändern sich beim nächsten Schritt.')
     phi=np.eye(factors)
     if factors>1 and rotation!='Keine':
         from factor_analyzer.rotator import Rotator
@@ -263,6 +331,8 @@ def module_cfa():
     st.write('Formulieren Sie eine Annahme über dieselben Lernkompetenzitems: Welche Items messen welchen Faktor? Vergleichen Sie alternative Modelle an derselben Kovarianzmatrix.')
     if 'fa_data' not in st.session_state:
         r=generated_data(); st.session_state.fa_data=dict(r=r,covariance=r,n=500,manual=False)
+    if st.session_state.get('fa_data_invalid',False):
+        st.error('Die zuletzt eingegebene Matrix in Modul 8 ist ungültig. Bitte dort korrigieren, bevor die CFA berechnet wird.'); return
     payload=st.session_state.fa_data; cov=payload['covariance']; n=payload['n']
     st.caption(f'Datengrundlage aus Modul 8 · N = {n}. Ohne vorherigen Besuch der EFA wird das Standardbeispiel verwendet. Itemstandardabweichungen und Matrix können in Modul 8 verändert werden.')
     dimensions=st.radio('Anzahl Faktoren',[1,2],index=1,horizontal=True,key='cfa_dimensions')
